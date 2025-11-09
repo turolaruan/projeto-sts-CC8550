@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pYC
+*.pyo
+.Python
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*.bak
+
+# Environment
+.env
+*.env.local
+
+# Logs
+logs/
+*.log
+
+# Coverage / Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS specifics
+.DS_Store
+Thumbs.db
+
+# Docker/compose
+*.pid
+
+# Mongo dump
+mongo_dump/
