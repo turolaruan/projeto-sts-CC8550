@@ -7,18 +7,25 @@ from decimal import Decimal
 from typing import Dict, Iterable, List, Optional
 
 from bson.decimal128 import Decimal128
-from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
-from pymongo import ASCENDING, DESCENDING, ReturnDocument
 
 from src.models.common import ensure_object_id
 from src.models.transaction import Transaction
 from src.repositories.base import Repository
+from src.repositories.mongo_compat import (
+    ASCENDING,
+    DESCENDING,
+    AsyncIOMotorCollection,
+    AsyncIOMotorDatabase,
+    ReturnDocument,
+    ensure_motor_dependencies,
+)
 
 
 class TransactionRepository(Repository[Transaction, str]):
     """Mongo-backed repository for transactions."""
 
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        ensure_motor_dependencies()
         self._collection: AsyncIOMotorCollection = database.get_collection("transactions")
         self._indexes_ready = False
 
@@ -325,7 +332,7 @@ class InMemoryTransactionRepository(Repository[Transaction, str]):
                     "count": 0,
                 }
             summary[key]["total"] += txn.amount
-        summary[key]["count"] += 1
+            summary[key]["count"] += 1
         return list(summary.values())
 
     async def sum_for_category_period(

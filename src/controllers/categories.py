@@ -38,7 +38,7 @@ async def create_category(
 @router.get(
     "/",
     response_model=List[Category],
-    summary="List categories",
+    summary="XXList categoriesXX",
 )
 async def list_categories(
     user_id: str | None = Query(default=None, min_length=24, max_length=24),

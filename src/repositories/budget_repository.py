@@ -6,18 +6,24 @@ from decimal import Decimal
 from typing import Dict, Iterable, List, Optional
 
 from bson.decimal128 import Decimal128
-from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
-from pymongo import ASCENDING, ReturnDocument
 
 from src.models.budget import Budget
 from src.models.common import ensure_object_id
 from src.repositories.base import Repository
+from src.repositories.mongo_compat import (
+    ASCENDING,
+    AsyncIOMotorCollection,
+    AsyncIOMotorDatabase,
+    ReturnDocument,
+    ensure_motor_dependencies,
+)
 
 
 class BudgetRepository(Repository[Budget, str]):
     """Mongo-backed repository for budgets."""
 
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        ensure_motor_dependencies()
         self._collection: AsyncIOMotorCollection = database.get_collection("budgets")
         self._indexes_ready = False
 

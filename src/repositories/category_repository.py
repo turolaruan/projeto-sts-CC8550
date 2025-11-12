@@ -4,18 +4,23 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional
 
-from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
-from pymongo import ASCENDING, ReturnDocument
-
 from src.models.category import Category
 from src.models.common import ensure_object_id
 from src.repositories.base import Repository
+from src.repositories.mongo_compat import (
+    ASCENDING,
+    AsyncIOMotorCollection,
+    AsyncIOMotorDatabase,
+    ReturnDocument,
+    ensure_motor_dependencies,
+)
 
 
 class CategoryRepository(Repository[Category, str]):
     """Mongo-backed repository for categories."""
 
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        ensure_motor_dependencies()
         self._collection: AsyncIOMotorCollection = database.get_collection("categories")
         self._indexes_ready = False
 

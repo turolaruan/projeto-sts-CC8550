@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from typing import Dict, Iterable, List, Optional
 
-from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
-from pymongo import ASCENDING, ReturnDocument
-from pymongo.errors import DuplicateKeyError
-
 from src.models.common import ensure_object_id
 from src.models.user import User
 from src.repositories.base import Repository
+from src.repositories.mongo_compat import (
+    ASCENDING,
+    AsyncIOMotorCollection,
+    AsyncIOMotorDatabase,
+    DuplicateKeyError,
+    ReturnDocument,
+    ensure_motor_dependencies,
+)
 from src.utils.exceptions import EntityAlreadyExistsError
 
 
@@ -18,6 +22,7 @@ class UserRepository(Repository[User, str]):
     """Mongo-backed repository for users."""
 
     def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        ensure_motor_dependencies()
         self._collection: AsyncIOMotorCollection = database.get_collection("users")
         self._indexes_ready: bool = False
 

@@ -191,6 +191,24 @@ O menu permite listar/criar usuários, contas, categorias, budgets, registrar tr
 docker compose down  # encerra o MongoDB opcionalmente
 ```
 
+## Testes e cobertura
+
+Execute toda a suíte (unitários, mutação, funcionais, integração e estruturais) com:
+
+```bash
+pytest
+```
+
+Para medir a cobertura com `coverage.py` (configuração em `.coveragerc`, com branch coverage e `fail_under=80`):
+
+```bash
+coverage run -m pytest
+coverage report -m
+coverage html  # gera htmlcov/index.html
+```
+
+> Evite rodar `pytest --cov` ao mesmo tempo que `coverage run`, pois ambos instrumentam o código. Os comandos acima já consolidam o relatório e permitem inspeção em HTML.
+
 ## Próximos Passos Sugeridos
 - Implementar suítes automatizadas (unit, integration, mutation etc.)
 - Adicionar mais regras de negócio (ex.: metas por conta, notificações)
