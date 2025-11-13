@@ -7,59 +7,63 @@ Este documento descreve o plano de testes adotada para validação do projeto, d
 
 ## 1. Testes Unitários
 
-**Objetivo:** Validar os **menores componentes** da aplicação (Modelos, Utilitários e Serviços) de forma totalmente isolada. Isso é feito em duas frentes:
-
-1.  **Testes de Modelos:** Validam a *estrutura* e *regras* dos dados (Pydantic).
-2.  **Testes de Serviços com Mocks:** Validam a *lógica* de negócio (Serviços), substituindo dependências (como repositórios) por "dublês" (Mocks).
-
----
-
-### Testes de Modelos e Utilitários (test_unidade.py)
-
-Valida a "fundação" da aplicação (Modelos Pydantic, Construtores e Funções Auxiliares) sem qualquer lógica de negócio.
+**Objetivo:** Validar os componentes de **nível mais baixo** da aplicação (Modelos Pydantic, Utilitários, Exceções) de forma totalmente isolada.
 
 **Arquivo Principal:** `test_unidade.py`
 
-* **Validação de Modelos (Pydantic):**
-    Testa se os modelos de criação e atualização estão aplicando as regras de validação e normalização de dados corretamente.
-    * **Normalização de Texto:** `test_account_create_trims_name`, `test_category_create_trims_name`, etc.
-    * **Rejeição de Campos Vazios:** `test_account_create_rejects_blank_name`, `test_category_create_rejects_blank_name`, etc.
-    * **Consistência Financeira (Quantização):** `test_budget_create_amount_is_quantized`, `test_transaction_create_amount_quantized`, etc.
-    * **Normalização de Dados (Email):** `test_user_create_lowercases_email`.
 
-* **Teste dos "Builders" (Construtores):**
-    Valida as funções `build_...` que transformam um *payload* de criação (ex: `UserCreate`) em um modelo de domínio completo (ex: `User`, com ID e timestamps).
-    * **Garante a Correta Construção:** `test_build_account_generates_ids_and_timestamps`, `test_build_user_generates_ids_and_timestamps`, etc.
+###  Validação de Modelos (Pydantic)
 
-* **Teste de Utilitários (Common):**
-    Valida as funções auxiliares encontradas em `src.models.common`.
-    * **Manipulação de IDs:** `test_generate_object_id_returns_valid_hex`, `test_ensure_object_id_valid_returns_objectid`, etc.
-    * **Manipulação de Datas:** `test_now_utc_returns_timezone_aware_datetime`.
-    * **Manipulação de Strings:** `test_strip_and_validate_non_empty_returns_trimmed_value`.
+Testa se os modelos de criação e atualização estão aplicando as regras de validação e normalização de dados corretamente.
 
-* **Teste de Definições e Exceções:**
-    Garante que as definições base (Enums) e as Exceções customizadas estão corretas.
-    * **Hierarquia de Exceções:** `test_app_exception_stores_context_dict`, `test_entity_not_found_error_is_subclass_of_app_exception`.
-    * **Valores de Enums:** `test_account_type_values_expected`, `test_category_type_values_expected`, etc.
+* **Normalização de Texto:** Garante que nomes e descrições são "limpos" (sem espaços extras no início ou fim).
+    * *Funções:* `test_account_create_trims_name`, `test_category_create_trims_name`, `test_user_create_trims_name`, `test_transaction_create_trims_description`.
 
----
+* **Rejeição de Campos Vazios:** Garante que campos obrigatórios (como `name`) são rejeitados se estiverem em branco.
+    * *Funções:* `test_account_create_rejects_blank_name`, `test_category_create_rejects_blank_name`, `test_user_update_rejects_blank_name`.
 
-### Testes de Lógica de Serviço (test_service_with_mocks.py)
+* **Consistência Financeira:** Arredonda (quantiza) valores `Decimal` para 2 casas decimais, evitando problemas de precisão.
+    * *Funções:* `test_account_create_normalizes_minimum_balance`, `test_budget_create_amount_is_quantized`, `test_transaction_create_amount_quantized`.
 
-Valida a **lógica interna** de um *único serviço* (ex: `UserService`) em total isolamento, simulando suas dependências (como o repositório) com *Mocks*.
+* **Normalização de Dados:** Converte dados para um formato padrão, como emails para minúsculas.
+    * *Função:* `test_user_create_lowercases_email`.
 
-**Arquivo Principal:** `test_service_with_mocks.py`
+###  Teste dos "Builders" (Construtores)
 
-* **Verificação de Chamadas (Caminho Feliz):**
-    Garante que o serviço chama corretamente os métodos do repositório (ex: `list` e `create`) ao executar uma ação.
+Valida as funções de construção (build) que transformam um *payload* de criação em um modelo maior. (Ex: um pequeno payload virar uma extrutura de dados maior  contendo dados adicionais de horário, dia , atualização, etc...)
+
+* **Geração de IDs e Timestamps:** Usando `patch` (um tipo de *mock*), simula as funções `generate_object_id` e `now_utc`.
+* **Garante a Correta Construção:** Verifica se o objeto finalizado contém o ID e os timestamps `created_at` e `updated_at` corretos.
+    * *Funções:* `test_build_account_generates_ids_and_timestamps`, `test_build_budget_generates_ids_and_timestamps`, `test_build_category_respects_parent_id`, `test_build_transaction_normalizes_amount_and_sets_timestamps`, `test_build_user_generates_ids_and_timestamps`.
+
+###  Teste de Utilitários
+
+Valida as funções auxiliares encontradas em `src.models.common`.
+
+* **Manipulação de IDs:** Testa a geração de `ObjectId` e a validação de strings de ID.
+    * *Funções:* `test_generate_object_id_returns_valid_hex`, `test_ensure_object_id_valid_returns_objectid`, `test_ensure_object_id_invalid_raises_value_error`.
+* **Manipulação de Datas:** Confirma que a função `now_utc` sempre retorna um *datetime* com fuso horário (timezone-aware).
+    * *Função:* `test_now_utc_returns_timezone_aware_datetime`.
+* **Manipulação de Strings:** Valida o utilitário de limpeza de strings.
+    * *Funções:* `test_strip_and_validate_non_empty_returns_trimmed_value`, `test_strip_and_validate_non_empty_raises_for_empty_string`.
+
+### Teste de Definições e Exceções
+
+Garante que o mapeamento correto para os enums e as exceções estão sendo realizadas corretamente
+
+* **Hierarquia de Exceções:** Verifica se as exceções customizadas (ex: `EntityNotFoundError`) herdam corretamente de `AppException`.
+    * *Funções:* `test_app_exception_stores_context_dict`, `test_entity_not_found_error_is_subclass_of_app_exception`.
+* **Valores de Enums:** Verifica se os valores de texto dos `Enums` (ex: `AccountType.CHECKING == "checking"`) estão corretos.
+
+### Testes de Lógica de Serviço (com Mocks)
+
+**Objetivo:** Validar a **lógica interna** de um *único serviço* em `test_service_with_mocks.py` (ex: `UserService`) em total isolamento, simulando suas dependências (como o repositório) com *Mocks*.
+
+* **Verificação de Chamadas (Caminho Feliz):** Garante que o serviço chama corretamente os métodos do repositório (ex: `list` e `create`) ao executar uma ação.
     * *Função:* `test_user_service_create_with_mocked_repository`
-
-* **Simulação de Erros (Exceções):**
-    Simula o repositório retornando um erro (ex: um usuário duplicado) e verifica se o serviço trata esse erro corretamente, lançando a exceção de negócio (`EntityAlreadyExistsError`).
+* **Simulação de Erros (Exceções):** Simula o repositório retornando um erro (ex: um usuário duplicado) e verifica se o serviço trata esse erro corretamente, lançando a exceção de negócio (`EntityAlreadyExistsError`).
     * *Função:* `test_user_service_prevents_duplicate_email_and_simulates_error`
-
-* **Simulação de "Não Encontrado":**
-    Simula o repositório retornando `None` e verifica se o serviço trata esse caso corretamente, lançando `EntityNotFoundError`.
+* **Simulação de "Não Encontrado":** Simula o repositório retornando `None` e verifica se o serviço trata esse caso corretamente, lançando `EntityNotFoundError`.
     * *Função:* `test_user_service_get_user_handles_not_found_with_mock`
 
 ---
