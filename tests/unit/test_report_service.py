@@ -1,60 +1,32 @@
-"""Tests for ReportService aggregation logic."""
+"""Unit tests for ReportService."""
 
-from __future__ import annotations
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
-import pytest
-
-from src.models.enums import CategoryType, TransactionType
-from src.services.report_service import ReportService
-from src.utils.exceptions import EntityNotFoundError
-from tests.structural.helpers import build_budget, build_category
-
-USER_ID = "64f6d1250a1b2c3d4e5f6789"
-CATEGORY_ID = "66f6d1250a1b2c3d4e5f6789"
+from src.services import ReportService
+from src.utils import FileManager
+from tests.fixtures.factories import make_transaction_model
+from tests.fixtures.memory_repositories import MemoryTransactionRepository
 
 
-def _make_service():
-    transaction_repository = SimpleNamespace(
-        aggregate_monthly_summary=AsyncMock(return_value=[]),
-    )
-    category_repository = SimpleNamespace(get=AsyncMock())
-    budget_repository = SimpleNamespace(list=AsyncMock(return_value=[]))
-    service = ReportService(transaction_repository, category_repository, budget_repository)
-    return service, transaction_repository, category_repository, budget_repository
+class TestReportService(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.repository = MemoryTransactionRepository()
+        self.temp_dir = TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.service = ReportService(self.repository, FileManager(base_dir=Path(self.temp_dir.name)))
 
+    async def test_report_service_exports_transactions(self):
+        user_id = "user-report"
+        tx1 = make_transaction_model(user_id=user_id)
+        tx2 = make_transaction_model(user_id=user_id, amount=250)
+        self.repository.storage[tx1.id] = tx1.model_dump()
+        self.repository.storage[tx2.id] = tx2.model_dump()
 
-@pytest.mark.asyncio
-async def test_monthly_summary_raises_when_category_missing() -> None:
-    service, transaction_repository, category_repository, _ = _make_service()
-    transaction_repository.aggregate_monthly_summary.return_value = [
-        {"category_id": CATEGORY_ID, "transaction_type": TransactionType.EXPENSE.value, "total": "100.00", "count": 1}
-    ]
-    category_repository.get.return_value = None
+        report = await self.service.export_transactions(user_id)
 
-    with pytest.raises(EntityNotFoundError):
-        await service.monthly_summary(USER_ID, 2024, 7)
-
-
-@pytest.mark.asyncio
-async def test_monthly_summary_calculates_budget_remaining() -> None:
-    service, transaction_repository, category_repository, budget_repository = _make_service()
-    category = build_category(id=CATEGORY_ID, user_id=USER_ID, name="Moradia", category_type=CategoryType.EXPENSE)
-    category_repository.get.side_effect = lambda category_id: category if category_id == CATEGORY_ID else None
-    transaction_repository.aggregate_monthly_summary.return_value = [
-        {"category_id": CATEGORY_ID, "transaction_type": TransactionType.EXPENSE.value, "total": "150.00", "count": 2}
-    ]
-    budget = build_budget(user_id=USER_ID, category_id=CATEGORY_ID, amount=Decimal("300.00"), year=2024, month=7)
-    budget_repository.list.return_value = [budget]
-
-    summary = await service.monthly_summary(USER_ID, 2024, 7)
-
-    assert summary.totals_by_type[TransactionType.EXPENSE] == Decimal("150.00")
-    assert len(summary.categories) == 1
-    item = summary.categories[0]
-    assert item.category_id == CATEGORY_ID
-    assert item.budget_amount == Decimal("300.00")
-    assert item.budget_remaining == Decimal("150.00")
+        self.assertTrue(Path(report.file_path).exists())
+        for attr, expected in {"total_transactions": 2}.items():
+            with self.subTest(attr=attr):
+                self.assertEqual(getattr(report, attr), expected)

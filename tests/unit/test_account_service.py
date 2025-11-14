@@ -1,155 +1,82 @@
-"""Focused tests for AccountService validations to improve mutation coverage."""
+"""Unit tests for AccountService."""
 
-from __future__ import annotations
+import unittest
 
-from decimal import Decimal
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
-import pytest
-
-from src.models.account import AccountCreate, AccountUpdate
-from src.models.enums import AccountType, CurrencyCode
-from src.services.account_service import AccountService
-from src.utils.exceptions import EntityNotFoundError, ValidationAppError
-from tests.structural.helpers import build_account
-
-USER_ID = "64f6d1250a1b2c3d4e5f6789"
+from src.models import AccountUpdate
+from src.services import AccountService, NotFoundError
+from tests.fixtures.factories import make_account_create, make_account_model, make_user_model
+from tests.fixtures.memory_repositories import MemoryAccountRepository, MemoryUserRepository
 
 
-def _make_service():
-    account_repository = SimpleNamespace(
-        create=AsyncMock(),
-        list=AsyncMock(),
-        get=AsyncMock(),
-        update=AsyncMock(),
-        delete=AsyncMock(),
-    )
-    user_repository = SimpleNamespace(get=AsyncMock(return_value={"id": USER_ID}))
-    transaction_repository = SimpleNamespace(exists_for_account=AsyncMock(return_value=False))
-    service = AccountService(account_repository, user_repository, transaction_repository)
-    return service, account_repository, user_repository, transaction_repository
+class TestAccountService(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.user_repository = MemoryUserRepository()
+        self.account_repository = MemoryAccountRepository()
+        self.service = AccountService(repository=self.account_repository, user_repository=self.user_repository)
 
+    async def test_create_account_requires_existing_user(self):
+        user = make_user_model()
+        self.user_repository.storage[user.id] = user.model_dump()
+        payload = make_account_create(user_id=user.id)
 
-def _sample_payload(**overrides: object) -> AccountCreate:
-    data = {
-        "user_id": USER_ID,
-        "name": "Conta Teste",
-        "account_type": AccountType.CHECKING,
-        "currency": CurrencyCode.BRL,
-        "starting_balance": Decimal("100.00"),
-        "minimum_balance": Decimal("10.00"),
-    }
-    data.update(overrides)
-    return AccountCreate(**data)
+        account = await self.service.create_account(payload)
 
+        self.assertEqual(account.user_id, user.id)
 
-@pytest.mark.asyncio
-async def test_create_account_requires_existing_user() -> None:
-    service, account_repo, user_repo, _ = _make_service()
-    user_repo.get.return_value = None
+    async def test_create_account_missing_user_raises(self):
+        with self.assertRaises(NotFoundError):
+            await self.service.create_account(make_account_create())
 
-    with pytest.raises(EntityNotFoundError):
-        await service.create_account(_sample_payload())
+    async def test_update_nonexistent_account_raises(self):
+        with self.assertRaises(NotFoundError):
+            await self.service.update_account("invalid", AccountUpdate(name="New"))
 
-    account_repo.create.assert_not_awaited()
+    async def test_get_account_returns_entry(self):
+        account = make_account_model()
+        self.account_repository.storage[account.id] = account.model_dump()
 
+        result = await self.service.get_account(account.id)
 
-@pytest.mark.asyncio
-async def test_create_account_rejects_starting_balance_below_minimum() -> None:
-    service, account_repo, _, __ = _make_service()
-    payload = _sample_payload(starting_balance=Decimal("5.00"), minimum_balance=Decimal("10.00"))
+        self.assertEqual(result.id, account.id)
 
-    with pytest.raises(ValidationAppError):
-        await service.create_account(payload)
+    async def test_get_account_missing_raises(self):
+        for missing_id in ("ghost", "invalid"):
+            with self.subTest(missing_id=missing_id):
+                with self.assertRaises(NotFoundError):
+                    await self.service.get_account(missing_id)
 
-    account_repo.create.assert_not_awaited()
+    async def test_update_account_success(self):
+        account = make_account_model(name="Old")
+        self.account_repository.storage[account.id] = account.model_dump()
 
+        updated = await self.service.update_account(account.id, AccountUpdate(name="New"))
 
-@pytest.mark.asyncio
-async def test_update_account_rejects_empty_payload() -> None:
-    service, _, __, ___ = _make_service()
+        self.assertEqual(updated.name, "New")
 
-    with pytest.raises(ValidationAppError):
-        await service.update_account("acc", AccountUpdate())
+    async def test_list_accounts_returns_only_user_entries(self):
+        user = make_user_model()
+        self.user_repository.storage[user.id] = user.model_dump()
+        owned = make_account_model(user_id=user.id)
+        external = make_account_model(user_id="other")
+        self.account_repository.storage[owned.id] = owned.model_dump()
+        self.account_repository.storage[external.id] = external.model_dump()
 
+        accounts = await self.service.list_accounts(user.id)
 
-@pytest.mark.asyncio
-async def test_update_account_rejects_minimum_above_balance() -> None:
-    service, account_repo, _, __ = _make_service()
-    account = build_account(balance=Decimal("100.00"), minimum_balance=Decimal("10.00"))
-    account_repo.get.return_value = account
+        self.assertEqual(len(accounts), 1)
+        self.assertEqual(accounts[0].user_id, user.id)
 
-    with pytest.raises(ValidationAppError):
-        await service.update_account(account.id, AccountUpdate(minimum_balance=Decimal("150.00")))
+    async def test_delete_account_removes_entry(self):
+        account = make_account_model()
+        self.account_repository.storage[account.id] = account.model_dump()
 
-    account_repo.update.assert_not_awaited()
+        result = await self.service.delete_account(account.id)
 
+        self.assertTrue(result)
+        self.assertNotIn(account.id, self.account_repository.storage)
 
-@pytest.mark.asyncio
-async def test_update_account_raises_when_repository_returns_none() -> None:
-    service, account_repo, _, __ = _make_service()
-    account = build_account()
-    account_repo.get.return_value = account
-    account_repo.update.return_value = None
-
-    with pytest.raises(EntityNotFoundError):
-        await service.update_account(account.id, AccountUpdate(name="Nova Conta"))
-
-
-@pytest.mark.asyncio
-async def test_delete_account_blocks_when_transactions_exist() -> None:
-    service, account_repo, _, transaction_repo = _make_service()
-    transaction_repo.exists_for_account.return_value = True
-
-    with pytest.raises(ValidationAppError):
-        await service.delete_account("account-id")
-
-    account_repo.delete.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_delete_account_raises_when_repository_reports_missing() -> None:
-    service, account_repo, _, transaction_repo = _make_service()
-    transaction_repo.exists_for_account.return_value = False
-    account_repo.delete.return_value = False
-
-    with pytest.raises(EntityNotFoundError):
-        await service.delete_account("account-id")
-
-
-@pytest.mark.asyncio
-async def test_adjust_balance_rejects_drop_below_minimum() -> None:
-    service, account_repo, _, __ = _make_service()
-    account = build_account(balance=Decimal("50.00"), minimum_balance=Decimal("20.00"))
-    account_repo.get.return_value = account
-
-    with pytest.raises(ValidationAppError):
-        await service.adjust_balance(account.id, Decimal("-40.00"))
-
-    account_repo.update.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_adjust_balance_updates_repository_on_success() -> None:
-    service, account_repo, _, __ = _make_service()
-    account = build_account(balance=Decimal("100.00"), minimum_balance=Decimal("10.00"))
-    updated_account = account.model_copy(update={"balance": Decimal("90.00")})
-    account_repo.get.return_value = account
-    account_repo.update.return_value = updated_account
-
-    result = await service.adjust_balance(account.id, Decimal("-10.00"))
-
-    account_repo.update.assert_awaited_once()
-    assert result.balance == Decimal("90.00")
-
-
-@pytest.mark.asyncio
-async def test_set_balance_rejects_value_below_minimum() -> None:
-    service, account_repo, _, __ = _make_service()
-    account = build_account(balance=Decimal("50.00"), minimum_balance=Decimal("25.00"))
-    account_repo.get.return_value = account
-
-    with pytest.raises(ValidationAppError):
-        await service.set_balance(account.id, Decimal("20.00"))
-
+    async def test_delete_account_missing_raises(self):
+        for missing_id in ("ghost", "orphan"):
+            with self.subTest(missing_id=missing_id):
+                with self.assertRaises(NotFoundError):
+                    await self.service.delete_account(missing_id)

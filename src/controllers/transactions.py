@@ -3,113 +3,99 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
-from src.models.enums import TransactionType
-from src.models.transaction import Transaction, TransactionCreate, TransactionUpdate
-from src.services.dependencies import get_transaction_service
-from src.services.transaction_service import TransactionService
-from src.utils.exceptions import EntityNotFoundError, ValidationAppError
-
-
-router = APIRouter(prefix="/transactions", tags=["transactions"])
-
-
-@router.post(
-    "/",
-    response_model=Transaction,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a transaction",
+from src.models import (
+    TransactionCreate,
+    TransactionFilter,
+    TransactionModel,
+    TransactionUpdate,
 )
+from src.services import TransactionService
+
+from .dependencies import get_transaction_service
+
+router = APIRouter(prefix="/transactions", tags=["Transactions"])
+
+
+@router.post("", response_model=TransactionModel, status_code=status.HTTP_201_CREATED)
 async def create_transaction(
     payload: TransactionCreate,
     service: TransactionService = Depends(get_transaction_service),
-) -> Transaction:
-    """Create a transaction and update affected balances."""
-    try:
-        return await service.create_transaction(payload)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
-    except ValidationAppError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
+) -> TransactionModel:
+    """Create a new transaction."""
+
+    return await service.create_transaction(payload)
 
 
-@router.get(
-    "/",
-    response_model=List[Transaction],
-    summary="List transactions",
-)
+@router.get("", response_model=list[TransactionModel])
 async def list_transactions(
-    user_id: str | None = Query(default=None, min_length=24, max_length=24),
-    account_id: str | None = Query(default=None, min_length=24, max_length=24),
-    category_id: str | None = Query(default=None, min_length=24, max_length=24),
-    transaction_type: TransactionType | None = Query(default=None),
-    transfer_account_id: str | None = Query(default=None, min_length=24, max_length=24),
-    date_from: datetime | None = Query(default=None),
-    date_to: datetime | None = Query(default=None),
+    user_id: str = Query(..., description="Filter by user"),
     service: TransactionService = Depends(get_transaction_service),
-) -> List[Transaction]:
-    """Return transactions with optional filtering."""
-    return await service.list_transactions(
+) -> list[TransactionModel]:
+    """List transactions for a user."""
+
+    return await service.list_transactions(user_id)
+
+
+@router.get("/search", response_model=List[TransactionModel])
+async def search_transactions(
+    user_id: str = Query(...),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
+    category: Optional[str] = Query(None),
+    min_amount: Optional[float] = Query(None, ge=0),
+    max_amount: Optional[float] = Query(None, ge=0),
+    tags: Optional[List[str]] = Query(None),
+    sort_by: str = Query("event_date"),
+    sort_order: int = Query(-1),
+    service: TransactionService = Depends(get_transaction_service),
+) -> List[TransactionModel]:
+    """Search transactions with filters and ordering."""
+
+    filters = TransactionFilter(
         user_id=user_id,
-        account_id=account_id,
-        category_id=category_id,
-        transaction_type=transaction_type.value if transaction_type else None,
-        transfer_account_id=transfer_account_id,
-        date_from=date_from,
-        date_to=date_to,
+        start_date=start_date,
+        end_date=end_date,
+        category=category,
+        min_amount=min_amount,
+        max_amount=max_amount,
+        tags=tags,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
+    return await service.search_transactions(filters)
 
 
-@router.get(
-    "/{transaction_id}",
-    response_model=Transaction,
-    summary="Get transaction by id",
-)
+@router.get("/{transaction_id}", response_model=TransactionModel)
 async def get_transaction(
     transaction_id: str,
     service: TransactionService = Depends(get_transaction_service),
-) -> Transaction:
-    """Retrieve a transaction by identifier."""
-    try:
-        return await service.get_transaction(transaction_id)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+) -> TransactionModel:
+    """Return transaction by id."""
+
+    return await service.get_transaction(transaction_id)
 
 
-@router.patch(
-    "/{transaction_id}",
-    response_model=Transaction,
-    summary="Update transaction",
-)
+@router.put("/{transaction_id}", response_model=TransactionModel)
 async def update_transaction(
     transaction_id: str,
     payload: TransactionUpdate,
     service: TransactionService = Depends(get_transaction_service),
-) -> Transaction:
-    """Update transaction details."""
-    try:
-        return await service.update_transaction(transaction_id, payload)
-    except ValidationAppError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+) -> TransactionModel:
+    """Update transaction."""
+
+    return await service.update_transaction(transaction_id, payload)
 
 
-@router.delete(
-    "/{transaction_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete transaction",
-)
+@router.delete("/{transaction_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
 async def delete_transaction(
     transaction_id: str,
     service: TransactionService = Depends(get_transaction_service),
 ) -> Response:
-    """Delete a transaction and revert balance effects."""
-    try:
-        await service.delete_transaction(transaction_id)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+    """Delete transaction."""
+
+    await service.delete_transaction(transaction_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,219 +1,94 @@
-# Simulação e Teste de Software — Sistema de Finanças Pessoais
+# Finance Manager API
 
-## Visão Geral
+Sistema modular para gerenciamento de finanças pessoais desenvolvido para o projeto da disciplina **Simulação e Teste de Software (CC8550)**. A aplicação expõe uma API REST sobre FastAPI com camadas bem definidas (controllers → services → repositories → MongoDB) e já está preparada para receber a suíte completa de testes especificada no `docs/projeto.md`.
 
-Projeto desenvolvido para a disciplina **Simulação e Teste de Software (CC8550)**. O objetivo é construir uma API REST para gerenciamento de finanças pessoais com foco em arquitetura em camadas, regras de negócio complexas e ampla cobertura de testes.
+## Principais entidades
 
-Principais entidades já implementadas:
-- Usuários
-- Contas financeiras
-- Categorias (receitas e despesas)
-- Transações (receitas, despesas e transferências)
-- Budgets mensais por categoria
-- Relatórios mensais consolidados
+- `User`: registra dados pessoais e a renda mensal.
+- `Account`: contas financeiras com saldo e valores bloqueados para metas.
+- `Transaction`: lançamentos de receitas, despesas e transferências com filtros avançados.
+- `Budget`: orçamentos por categoria e período com controle de limites.
+- `Goal`: metas de economia com bloqueio automático de saldo.
 
-## Requisitos Técnicos Atendidos
+## Regras de negócio implementadas
 
-- Modularização por camadas (`controllers`, `services`, `repositories`, `models`)
-- Injeção de dependências via FastAPI
-- Type hints e docstrings nas principais classes
-- Configuração externa via `.env`
-- Logging configurável (`config/logging.yaml`)
-- Persistência em MongoDB (Motor) com índices criados programaticamente
+1. **Validação de saldo com bloqueios**: despesas/transferências não são permitidas quando o saldo disponível (`balance - goal_locked_amount`) ficaria negativo.
+2. **Orçamento por categoria**: antes de efetivar uma despesa, o serviço verifica e atualiza o orçamento mensal correspondente, bloqueando transações que excedam o limite definido.
+3. **Metas com fundos bloqueados**: contribuições para metas travam o saldo na conta, liberando automaticamente quando a meta é concluída ou removida.
 
-## Guia de Execução
+## Configuração e Execução
 
-### 1. Pré-requisitos
-- Python 3.10+
-- Docker e Docker Compose
-- `pip`/`venv`
+1. Copie o `.env.example` para `.env` ajustando as variáveis conforme necessário.
+2. Instale dependências: `pip install -r requirements.txt`.
+3. Inicie o MongoDB+API via Docker Compose:
 
-### 2. Clonar e instalar dependências
 ```bash
-git clone <url-do-repositorio>
-cd projeto-sts-CC8550
-python3 -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-python3 -m pip install -r requirements.txt
+docker compose -f config/docker-compose.yml up --build
 ```
 
-### 3. Configurar variáveis de ambiente
-```bash
-cp .env.example .env
-# Edite .env se quiser customizar a URI/credenciais do Mongo
-```
+O serviço ficará disponível em `http://localhost:8000`. A documentação interativa pode ser acessada em `/docs` ou `/redoc`. Se preferir rodar sem Docker, assegure que há um Mongo em execução e suba o FastAPI com:
 
-### 4. Subir o MongoDB local
-```bash
-docker compose up -d
-```
-
-### 5. Criar coleções e índices
-```bash
-python3 -m src.database.setup
-```
-
-### 6. (Opcional) Popular dados de exemplo
-```bash
-python3 - <<'PY'
-from datetime import datetime, timezone
-from bson import ObjectId
-from pymongo import MongoClient
-
-client = MongoClient('mongodb://root:root@localhost:27017/?authSource=admin')
-db = client['personal_finance_db']
-
-for name in ['users', 'accounts', 'categories', 'transactions', 'budgets']:
-    db[name].delete_many({})
-
-now = datetime.now(timezone.utc)
-user_id = ObjectId()
-account_id = ObjectId()
-income_cat = ObjectId()
-expense_cat = ObjectId()
-
-db.users.insert_one({
-    '_id': user_id,
-    'name': 'Maria Souza',
-    'email': 'maria.souza@example.com',
-    'default_currency': 'BRL',
-    'created_at': now,
-    'updated_at': now,
-})
-
-db.accounts.insert_one({
-    '_id': account_id,
-    'user_id': user_id,
-    'name': 'Conta Corrente Itaú',
-    'account_type': 'checking',
-    'currency': 'BRL',
-    'description': 'Conta principal',
-    'minimum_balance': 0,
-    'balance': 2500.00,
-    'created_at': now,
-    'updated_at': now,
-})
-
-db.categories.insert_many([
-    {
-        '_id': income_cat,
-        'user_id': user_id,
-        'name': 'Salário',
-        'category_type': 'income',
-        'description': 'Recebimentos de salário',
-        'parent_id': None,
-        'created_at': now,
-        'updated_at': now,
-    },
-    {
-        '_id': expense_cat,
-        'user_id': user_id,
-        'name': 'Supermercado',
-        'category_type': 'expense',
-        'description': 'Compras de alimentação',
-        'parent_id': None,
-        'created_at': now,
-        'updated_at': now,
-    },
-])
-
-db.budgets.insert_one({
-    '_id': ObjectId(),
-    'user_id': user_id,
-    'category_id': expense_cat,
-    'year': now.year,
-    'month': now.month,
-    'amount': 1200.0,
-    'alert_percentage': 80,
-    'created_at': now,
-    'updated_at': now,
-})
-
-db.transactions.insert_many([
-    {
-        '_id': ObjectId(),
-        'user_id': user_id,
-        'account_id': account_id,
-        'category_id': income_cat,
-        'amount': 5000.00,
-        'transaction_type': 'income',
-        'occurred_at': now,
-        'description': 'Pagamento mensal',
-        'notes': None,
-        'counterparty': 'Empresa XYZ',
-        'transfer_account_id': None,
-        'created_at': now,
-        'updated_at': now,
-    },
-    {
-        '_id': ObjectId(),
-        'user_id': user_id,
-        'account_id': account_id,
-        'category_id': expense_cat,
-        'amount': 350.00,
-        'transaction_type': 'expense',
-        'occurred_at': now,
-        'description': 'Compras semanais',
-        'notes': None,
-        'counterparty': 'Mercado Bom Preço',
-        'transfer_account_id': None,
-        'created_at': now,
-        'updated_at': now,
-    },
-])
-
-print('Dados de exemplo inseridos.')
-PY
-```
-
-### 7. Executar a API
 ```bash
 uvicorn src.main:app --reload
 ```
-- Servidor: `http://127.0.0.1:8000`
-- Documentação interativa: `http://127.0.0.1:8000/docs`
 
-### 7.1 Interface em Linha de Comando (opcional)
+### Popular dados de demonstração
+
 ```bash
-python3 -m src.interface.cli
-```
-O menu permite listar/criar usuários, contas, categorias, budgets, registrar transações e visualizar o relatório mensal diretamente pelo terminal.
-
-### 8. Rotas principais para testar
-- `GET /api/users`
-- `GET /api/accounts?user_id=<id>`
-- `POST /api/transactions`
-- `GET /api/budgets?user_id=<id>&year=YYYY&month=MM`
-- `GET /api/reports/monthly-summary?user_id=<id>&year=YYYY&month=MM`
-
-### 9. Encerrar serviços
-```bash
-docker compose down  # encerra o MongoDB opcionalmente
+python scripts/generate_demo_data.py --users 5 --drop-existing --mongodb-uri mongodb://localhost:27018
 ```
 
-## Testes e cobertura
+Isso cria usuários/contas/orçamentos/metas/transações no Mongo apontado no `.env`.
 
-Execute toda a suíte (unitários, mutação, funcionais, integração e estruturais) com:
+### Interface CLI
+
+Também é possível interagir com a API via CLI:
 
 ```bash
-pytest
+python scripts/cli.py users-list
+python scripts/cli.py users-create --name "CLI User" --email cli@example.com
 ```
 
-Para medir a cobertura com `coverage.py` (configuração em `.coveragerc`, com branch coverage e `fail_under=80`):
+### Menu interativo (modo guiado)
+
+Para quem prefere um fluxo com prompts, utilize o menu textual:
 
 ```bash
-coverage run -m pytest
+python scripts/menu.py
+# ou informe explicitamente o host/porta do backend
+python scripts/menu.py --base-url http://localhost:8001/api/v1
+```
+
+O menu permite listar e criar usuários, consultar/criar contas, registrar transações e exportar relatórios sem precisar memorizar endpoints ou parâmetros.
+
+
+## Estrutura
+
+- `src/models`: modelos de domínio e schemas Pydantic.
+- `src/repositories`: camda de acesso a dados com interfaces intercambiáveis.
+- `src/services`: regras de negócio, validações e integração entre entidades.
+- `src/controllers`: routers FastAPI organizados por recurso.
+- `src/utils`: helpers de configuração, logging, acesso ao MongoDB e exportação de relatórios.
+- `config/docker-compose.yml`: orquestração do app + MongoDB em containers.
+
+## Próximos passos
+
+1. Implementar a suíte de testes (unitários, integração, funcionais etc.) seguindo o plano definido.
+2. Configurar fixtures de dados em `tests/fixtures` para cenários replicáveis.
+3. Documentar plano e relatório de testes nos arquivos `docs/plano_testes.md` e `docs/relatorio_testes.md`.
+
+Com o backend completo, o próximo foco será construir e automatizar os testes exigidos pelo projeto.
+
+## Execução dos testes
+
+```bash
+pytest                              # executa toda a suíte
+coverage run -m pytest -v --cov=src --cov-branch --cov-report=term-missing --cov-report=html
 coverage report -m
-coverage html  # gera htmlcov/index.html
+# Tests de mutação
+rm -rf .mutmut-cache mutants && PYTEST_ADDOPTS= PROJECT_ROOT=$(pwd) mutmut run
 ```
 
-> Evite rodar `pytest --cov` ao mesmo tempo que `coverage run`, pois ambos instrumentam o código. Os comandos acima já consolidam o relatório e permitem inspeção em HTML.
-
-## Próximos Passos Sugeridos
-- Implementar suítes automatizadas (unit, integration, mutation etc.)
-- Adicionar mais regras de negócio (ex.: metas por conta, notificações)
-- Expandir relatórios (dashboards ou exportação de CSV/JSON)
-
----
-
-**Professor responsável:** Luciano Rossi — Centro Universitário FEI
+- As fixtures/mocks estão em `tests/fixtures`.
+- Os testes de integração/funcionais usam `httpx.AsyncClient` com dependências sobrescritas (sem Mongo real).
+- Testes de performance usam `pytest-benchmark` (`tests/performance/test_transaction_search_benchmark.py`).

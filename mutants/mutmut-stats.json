@@ -1,0 +1,12 @@
+{
+    "tests_by_mangled_function_name": {},
+    "duration_by_test": {
+        "tests/mutation/test_mutacao.py::test_goal_completion_releases_locked_amount": 0.0002565359973232262,
+        "tests/mutation/test_mutacao.py::test_budget_status_thresholds_are_enforced": 8.006400457816198e-05,
+        "tests/mutation/test_mutacao.py::test_budget_apply_expense_allows_exact_limit": 0.00029799000185448676,
+        "tests/mutation/test_mutacao.py::test_goal_contribution_requires_expense": 0.00048426399735035375,
+        "tests/mutation/test_mutacao.py::test_goal_contribution_skips_budget_but_updates_goal": 0.0004717999981949106,
+        "tests/mutation/test_mutmut_guard.py::test_mutmut_forced_failure_guard": 0.00012190100096631795
+    },
+    "stats_time": 1.106603067
+}

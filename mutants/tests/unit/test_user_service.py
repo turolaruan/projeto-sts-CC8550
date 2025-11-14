@@ -1,80 +1,78 @@
-"""Tests for UserService covering validation-heavy paths."""
+"""Unit tests for UserService."""
 
-from __future__ import annotations
+import unittest
 
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
-import pytest
-
-from src.models.enums import CurrencyCode
-from src.models.user import UserCreate, UserUpdate
-from src.services.user_service import UserService
-from src.utils.exceptions import EntityAlreadyExistsError, EntityNotFoundError, ValidationAppError
-from tests.structural.helpers import build_user
+from src.models import UserUpdate
+from src.services import BusinessRuleError, NotFoundError, UserService
+from tests.fixtures.factories import make_user_create, make_user_model
+from tests.fixtures.memory_repositories import MemoryUserRepository
 
 
-def _make_service():
-    repository = SimpleNamespace(
-        create=AsyncMock(),
-        list=AsyncMock(return_value=[]),
-        get=AsyncMock(),
-        update=AsyncMock(),
-        delete=AsyncMock(return_value=True),
-    )
-    service = UserService(repository)
-    return service, repository
+class TestUserService(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.user_repository = MemoryUserRepository()
+        self.service = UserService(repository=self.user_repository)
 
+    async def test_create_user_persists_and_returns_user(self):
+        payload = make_user_create(email="unique@example.com")
 
-def _payload(**overrides: object) -> UserCreate:
-    data = {
-        "name": "Usuário Serviço",
-        "email": "user@example.com",
-        "default_currency": CurrencyCode.BRL,
-    }
-    data.update(overrides)
-    return UserCreate(**data)
+        user = await self.service.create_user(payload)
 
+        self.assertEqual(user.email, payload.email)
+        self.assertEqual(len(self.user_repository.storage), 1)
 
-@pytest.mark.asyncio
-async def test_create_user_rejects_duplicate_email() -> None:
-    service, repository = _make_service()
-    repository.list.return_value = [build_user()]
+    async def test_create_user_with_duplicate_email_raises(self):
+        existing = make_user_model(email="dup@example.com")
+        self.user_repository.storage[existing.id] = existing.model_dump()
 
-    with pytest.raises(EntityAlreadyExistsError):
-        await service.create_user(_payload())
+        with self.assertRaises(BusinessRuleError):
+            await self.service.create_user(make_user_create(email="dup@example.com"))
 
-    repository.create.assert_not_awaited()
+    async def test_get_user_with_invalid_id_raises(self):
+        for missing_id in ("missing-id", "ghost"):
+            with self.subTest(missing_id=missing_id):
+                with self.assertRaises(NotFoundError):
+                    await self.service.get_user(missing_id)
 
+    async def test_update_user_changes_fields(self):
+        stored = make_user_model(name="Old Name")
+        self.user_repository.storage[stored.id] = stored.model_dump()
 
-@pytest.mark.asyncio
-async def test_list_users_forwards_filters() -> None:
-    service, repository = _make_service()
-    await service.list_users(name="Ana", email="ana@example.com", default_currency=CurrencyCode.BRL)
-    repository.list.assert_awaited_once_with(name="Ana", email="ana@example.com", default_currency=CurrencyCode.BRL)
+        updated = await self.service.update_user(stored.id, UserUpdate(name="New Name"))
 
+        self.assertEqual(updated.name, "New Name")
 
-@pytest.mark.asyncio
-async def test_update_user_rejects_empty_payload() -> None:
-    service, _ = _make_service()
+    async def test_update_user_not_found_raises(self):
+        with self.assertRaises(NotFoundError):
+            await self.service.update_user("missing", UserUpdate(name="Ghost"))
 
-    with pytest.raises(ValidationAppError):
-        await service.update_user("user-id", UserUpdate())
+    async def test_delete_user_removes_entry(self):
+        stored = make_user_model()
+        self.user_repository.storage[stored.id] = stored.model_dump()
 
+        result = await self.service.delete_user(stored.id)
 
-@pytest.mark.asyncio
-async def test_update_user_raises_when_repository_returns_none() -> None:
-    service, repository = _make_service()
-    repository.update.return_value = None
+        self.assertTrue(result)
+        self.assertNotIn(stored.id, self.user_repository.storage)
 
-    with pytest.raises(EntityNotFoundError):
-        await service.update_user("user-id", UserUpdate(name="Novo"))
+    async def test_delete_user_missing_raises(self):
+        for missing_id in ("ghost", "void"):
+            with self.subTest(missing_id=missing_id):
+                with self.assertRaises(NotFoundError):
+                    await self.service.delete_user(missing_id)
 
+    async def test_list_users_returns_all(self):
+        stored = make_user_model()
+        self.user_repository.storage[stored.id] = stored.model_dump()
 
-@pytest.mark.asyncio
-async def test_delete_user_raises_when_repository_reports_missing() -> None:
-    service, repository = _make_service()
-    repository.delete.return_value = False
+        users = await self.service.list_users()
 
-    with pytest.raises(EntityNotFoundError):
-        await service.delete_user("user-id")
+        self.assertEqual(len(users), 1)
+
+    async def test_get_user_returns_entry(self):
+        stored = make_user_model()
+        self.user_repository.storage[stored.id] = stored.model_dump()
+
+        user = await self.service.get_user(stored.id)
+
+        self.assertEqual(user.id, stored.id)

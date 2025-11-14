@@ -1,451 +1,324 @@
-"""Testes de integração cobrindo fluxos completos do domínio."""
+"""Integration tests hitting FastAPI endpoints."""
 
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
-from decimal import Decimal
+from datetime import date
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from src.models.account import AccountCreate
-from src.models.budget import BudgetCreate
-from src.models.category import CategoryCreate
-from src.models.common import generate_object_id
-from src.models.enums import AccountType, CategoryType, CurrencyCode, TransactionType
-from src.models.transaction import TransactionCreate
-from src.models.user import UserCreate
-from src.repositories.account_repository import InMemoryAccountRepository
-from src.repositories.budget_repository import InMemoryBudgetRepository
-from src.repositories.category_repository import InMemoryCategoryRepository
-from src.repositories.transaction_repository import InMemoryTransactionRepository
-from src.repositories.user_repository import InMemoryUserRepository
-from src.services.account_service import AccountService
-from src.services.budget_service import BudgetService
-from src.services.category_service import CategoryService
-from src.services.report_service import ReportService
-from src.services.transaction_service import TransactionService
-from src.services.user_service import UserService
-from src.utils.exceptions import ValidationAppError
+from httpx import ASGITransport, AsyncClient
+
+from src.controllers.dependencies import (
+    get_account_service,
+    get_budget_service,
+    get_goal_service,
+    get_report_service,
+    get_transaction_service,
+    get_user_service,
+)
+from src.main import create_app
+from src.models import AccountCreate, AccountType
+from src.services import AccountService, BudgetService, GoalService, ReportService, TransactionService, UserService
+from src.utils import FileManager
+from tests.fixtures.factories import make_budget_create, make_transaction_create, make_user_create
+from tests.fixtures.memory_repositories import (
+    MemoryAccountRepository,
+    MemoryBudgetRepository,
+    MemoryGoalRepository,
+    MemoryTransactionRepository,
+    MemoryUserRepository,
+)
 
 
-class FinanceIntegrationTest(unittest.IsolatedAsyncioTestCase):
-    """Orquestra os serviços reais usando repositórios em memória."""
-
-    async def asyncSetUp(self) -> None:
-        self.user_repo = InMemoryUserRepository()
-        self.account_repo = InMemoryAccountRepository()
-        self.category_repo = InMemoryCategoryRepository()
-        self.budget_repo = InMemoryBudgetRepository()
-        self.transaction_repo = InMemoryTransactionRepository()
-
-        self.user_service = UserService(self.user_repo)
-        self.account_service = AccountService(
-            self.account_repo,
-            self.user_repo,
-            self.transaction_repo,
-        )
-        self.category_service = CategoryService(
-            self.category_repo,
-            self.user_repo,
-            self.transaction_repo,
-            self.budget_repo,
-        )
-        self.budget_service = BudgetService(
-            self.budget_repo,
-            self.user_repo,
-            self.category_repo,
-            self.transaction_repo,
+class TestIntegrationFlows(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.user_repository = MemoryUserRepository()
+        self.account_repository = MemoryAccountRepository()
+        self.budget_repository = MemoryBudgetRepository()
+        self.goal_repository = MemoryGoalRepository()
+        self.transaction_repository = MemoryTransactionRepository()
+        self.user_service = UserService(repository=self.user_repository)
+        self.account_service = AccountService(repository=self.account_repository, user_repository=self.user_repository)
+        self.budget_service = BudgetService(repository=self.budget_repository)
+        self.goal_service = GoalService(repository=self.goal_repository, account_repository=self.account_repository)
+        self.temp_dir = TemporaryDirectory()
+        self.report_service = ReportService(
+            repository=self.transaction_repository,
+            file_manager=FileManager(base_dir=Path(self.temp_dir.name)),
         )
         self.transaction_service = TransactionService(
-            self.transaction_repo,
-            self.account_service,
-            self.account_repo,
-            self.category_repo,
-            self.user_repo,
-            self.budget_repo,
+            repository=self.transaction_repository,
+            account_repository=self.account_repository,
+            user_repository=self.user_repository,
+            budget_service=self.budget_service,
+            goal_service=self.goal_service,
         )
-        self.report_service = ReportService(
-            self.transaction_repo,
-            self.category_repo,
-            self.budget_repo,
+        self.app = create_app()
+        self.app.dependency_overrides[get_user_service] = lambda: self.user_service
+        self.app.dependency_overrides[get_account_service] = lambda: self.account_service
+        self.app.dependency_overrides[get_budget_service] = lambda: self.budget_service
+        self.app.dependency_overrides[get_goal_service] = lambda: self.goal_service
+        self.app.dependency_overrides[get_transaction_service] = lambda: self.transaction_service
+        self.app.dependency_overrides[get_report_service] = lambda: self.report_service
+        transport = ASGITransport(app=self.app)
+        self.client = AsyncClient(transport=transport, base_url="http://testserver")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        self.temp_dir.cleanup()
+
+    async def test_user_and_account_flow(self):
+        user_payload = make_user_create().model_dump()
+        response = await self.client.post("/api/v1/users", json=user_payload)
+        self.assertEqual(response.status_code, 201)
+        user_id = response.json()["id"]
+
+        account_payload = {
+            "user_id": user_id,
+            "name": "My Wallet",
+            "institution": "Bank",
+            "type": "checking",
+            "balance": 250.0,
+        }
+        account_response = await self.client.post("/api/v1/accounts", json=account_payload)
+        self.assertEqual(account_response.status_code, 201)
+
+        accounts = await self.client.get("/api/v1/accounts", params={"user_id": user_id})
+        self.assertEqual(accounts.status_code, 200)
+        self.assertEqual(len(accounts.json()), 1)
+
+    async def test_budget_summary_endpoint(self):
+        user = await self.user_service.create_user(make_user_create())
+        budget_payload = {
+            "user_id": user.id,
+            "category": "groceries",
+            "limit_amount": 300,
+            "period_start": "2024-01-01",
+            "period_end": "2024-01-31",
+            "alerts_enabled": True,
+        }
+
+        response = await self.client.post("/api/v1/budgets", json=budget_payload)
+        self.assertEqual(response.status_code, 201)
+
+        summary = await self.client.get(f"/api/v1/budgets/summary/{user.id}")
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.json()[0]["category"], "groceries")
+
+    async def test_transaction_search_returns_inserted_items(self):
+        user = await self.user_service.create_user(make_user_create())
+        account = await self.account_service.create_account(
+            AccountCreate(user_id=user.id, name="Wallet", institution="Bank", type=AccountType.CHECKING, balance=400)
         )
-        self.default_date = datetime(2024, 6, 15, 12, 0, tzinfo=timezone.utc)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-    def _unique_email(self, prefix: str = "user") -> str:
-        return f"{prefix}.{generate_object_id()}@example.com"
-
-    def _date(self, year: int, month: int, day: int) -> datetime:
-        return datetime(year, month, day, 12, 0, tzinfo=timezone.utc)
-
-    async def _create_user(self, *, name: str = "Usuário Integração") -> object:
-        payload = UserCreate(
-            name=name,
-            email=self._unique_email(name.split()[0].lower()),
-            default_currency=CurrencyCode.BRL,
-        )
-        return await self.user_service.create_user(payload)
-
-    async def _create_account(
-        self,
-        user,
-        *,
-        name: str = "Conta Corrente",
-        starting_balance: Decimal = Decimal("500.00"),
-        minimum: Decimal = Decimal("0"),
-        account_type: AccountType = AccountType.CHECKING,
-    ):
-        payload = AccountCreate(
-            user_id=user.id,
-            name=name,
-            account_type=account_type,
-            currency=CurrencyCode.BRL,
-            description="Conta integrada",
-            minimum_balance=minimum,
-            starting_balance=starting_balance,
-        )
-        return await self.account_service.create_account(payload)
-
-    async def _create_category(
-        self,
-        user,
-        *,
-        name: str = "Categoria",
-        category_type: CategoryType = CategoryType.EXPENSE,
-        parent_id: str | None = None,
-    ):
-        payload = CategoryCreate(
-            user_id=user.id,
-            name=name,
-            category_type=category_type,
-            description=None,
-            parent_id=parent_id,
-        )
-        return await self.category_service.create_category(payload)
-
-    async def _create_budget(
-        self,
-        user,
-        category,
-        *,
-        amount: Decimal = Decimal("500.00"),
-        year: int = 2024,
-        month: int = 6,
-    ):
-        payload = BudgetCreate(
-            user_id=user.id,
-            category_id=category.id,
-            year=year,
-            month=month,
-            amount=amount,
-            alert_percentage=80,
-        )
-        return await self.budget_service.create_budget(payload)
-
-    async def _create_transaction(
-        self,
-        user,
-        account,
-        category,
-        *,
-        amount: Decimal,
-        transaction_type: TransactionType,
-        description: str,
-        occurred_at: datetime | None = None,
-        transfer_account=None,
-    ):
-        payload = TransactionCreate(
-            user_id=user.id,
-            account_id=account.id,
-            category_id=category.id,
-            amount=amount,
-            transaction_type=transaction_type,
-            occurred_at=occurred_at or self.default_date,
-            description=description,
-            transfer_account_id=transfer_account.id if transfer_account else None,
-        )
-        return await self.transaction_service.create_transaction(payload)
-
-    # ------------------------------------------------------------------
-    # Test cases
-    # ------------------------------------------------------------------
-    async def test_user_creation_and_listing_flow(self) -> None:
-        ana = await self._create_user(name="Ana Integração")
-        await self._create_user(name="Bruno Integração")
-
-        filtered = await self.user_service.list_users(name="Ana")
-        self.assertEqual(1, len(filtered))
-
-        fetched = await self.user_service.get_user(ana.id)
-        self.assertEqual(ana.email, fetched.email)
-
-    async def test_account_creation_persists_starting_balance(self) -> None:
-        user = await self._create_user()
-        account = await self._create_account(
-            user,
-            starting_balance=Decimal("350.00"),
-            minimum=Decimal("50.00"),
+        await self.budget_service.create_budget(
+            make_budget_create(user_id=user.id, category="groceries", period_start=date(2024, 1, 1), period_end=date(2024, 1, 31))
         )
 
-        stored = await self.account_service.get_account(account.id)
-        self.assertEqual(Decimal("350.00"), stored.balance)
+        tx_payload = {
+            "user_id": user.id,
+            "account_id": account.id,
+            "type": "expense",
+            "category": "groceries",
+            "description": "Dinner",
+            "amount": 60.0,
+        }
+        await self.client.post("/api/v1/transactions", json=tx_payload)
 
-        accounts = await self.account_service.list_accounts(user_id=user.id)
-        self.assertEqual([account.id], [item.id for item in accounts])
-
-    async def test_income_transaction_updates_balance_and_listing(self) -> None:
-        user = await self._create_user()
-        income_category = await self._create_category(
-            user,
-            name="Salário",
-            category_type=CategoryType.INCOME,
+        response = await self.client.get(
+            "/api/v1/transactions/search",
+            params={"user_id": user.id, "category": "groceries"},
         )
-        account = await self._create_account(user, starting_balance=Decimal("100.00"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
 
-        transaction = await self._create_transaction(
-            user,
-            account,
-            income_category,
-            amount=Decimal("250.00"),
-            transaction_type=TransactionType.INCOME,
-            description="Pagamento mensal",
+    async def test_goal_contribution_flow(self):
+        user = await self.client.post("/api/v1/users", json=make_user_create().model_dump())
+        user_id = user.json()["id"]
+        account_payload = {
+            "user_id": user_id,
+            "name": "Savings",
+            "institution": "Bank",
+            "type": "checking",
+            "balance": 500,
+        }
+        account = await self.client.post("/api/v1/accounts", json=account_payload)
+        account_id = account.json()["id"]
+        goal_payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "name": "Trip",
+            "target_amount": 100,
+            "target_date": "2024-12-31",
+            "lock_funds": False,
+        }
+        goal = await self.client.post("/api/v1/goals", json=goal_payload)
+        goal_id = goal.json()["id"]
+
+        tx_payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "goal_id": goal_id,
+            "type": "expense",
+            "category": "goals",
+            "description": "Deposit",
+            "amount": 120,
+        }
+        tx_response = await self.client.post("/api/v1/transactions", json=tx_payload)
+        self.assertEqual(tx_response.status_code, 201)
+
+        goal_response = await self.client.get(f"/api/v1/goals/{goal_id}")
+        self.assertGreaterEqual(goal_response.json()["current_amount"], 120)
+
+    async def test_report_endpoint_generates_payload(self):
+        user = await self.user_service.create_user(make_user_create())
+        account = await self.account_service.create_account(
+            AccountCreate(user_id=user.id, name="Report", institution="Bank", type=AccountType.CHECKING, balance=100)
         )
-
-        updated = await self.account_service.get_account(account.id)
-        self.assertEqual(Decimal("350.00"), updated.balance)
-
-        transactions = await self.transaction_service.list_transactions(user_id=user.id)
-        self.assertEqual([transaction.id], [item.id for item in transactions])
-
-    async def test_transfer_transaction_updates_both_accounts(self) -> None:
-        user = await self._create_user()
-        origin = await self._create_account(
-            user,
-            name="Conta Origem",
-            starting_balance=Decimal("500.00"),
+        await self.transaction_service.create_transaction(
+            make_transaction_create(user_id=user.id, account_id=account.id, amount=20, description="Lunch")
         )
-        destination = await self._create_account(
-            user,
-            name="Conta Destino",
-            starting_balance=Decimal("150.00"),
-        )
-        transfer_category = await self._create_category(
-            user,
-            name="Transferências",
-            category_type=CategoryType.EXPENSE,
-        )
-
-        await self._create_transaction(
-            user,
-            origin,
-            transfer_category,
-            amount=Decimal("200.00"),
-            transaction_type=TransactionType.TRANSFER,
-            description="Envio entre contas",
-            transfer_account=destination,
-        )
-
-        updated_origin = await self.account_service.get_account(origin.id)
-        updated_destination = await self.account_service.get_account(destination.id)
-        self.assertEqual(Decimal("300.00"), updated_origin.balance)
-        self.assertEqual(Decimal("350.00"), updated_destination.balance)
-
-    async def test_expense_transaction_respects_budget_limit(self) -> None:
-        user = await self._create_user()
-        account = await self._create_account(user, starting_balance=Decimal("400.00"))
-        expense_category = await self._create_category(
-            user,
-            name="Mercado",
-            category_type=CategoryType.EXPENSE,
-        )
-        await self._create_budget(
-            user,
-            expense_category,
-            amount=Decimal("200.00"),
-            year=2024,
-            month=6,
-        )
-
-        await self._create_transaction(
-            user,
-            account,
-            expense_category,
-            amount=Decimal("150.00"),
-            transaction_type=TransactionType.EXPENSE,
-            description="Compra semanal",
-            occurred_at=self._date(2024, 6, 5),
-        )
-
-        with self.assertRaises(ValidationAppError):
-            await self._create_transaction(
-                user,
-                account,
-                expense_category,
-                amount=Decimal("100.00"),
-                transaction_type=TransactionType.EXPENSE,
-                description="Compra que estoura limite",
-                occurred_at=self._date(2024, 6, 20),
+        await self.transaction_service.create_transaction(
+            make_transaction_create(
+                user_id=user.id,
+                account_id=account.id,
+                type="income",
+                amount=200,
+                description="Bonus",
             )
-
-    async def test_delete_transaction_reverts_account_balance(self) -> None:
-        user = await self._create_user()
-        account = await self._create_account(user, starting_balance=Decimal("500.00"))
-        expense_category = await self._create_category(
-            user,
-            name="Transporte",
-            category_type=CategoryType.EXPENSE,
-        )
-        transaction = await self._create_transaction(
-            user,
-            account,
-            expense_category,
-            amount=Decimal("120.00"),
-            transaction_type=TransactionType.EXPENSE,
-            description="Aplicativo de corrida",
         )
 
-        balance_after_purchase = await self.account_service.get_account(account.id)
-        self.assertEqual(Decimal("380.00"), balance_after_purchase.balance)
+        response = await self.client.get(f"/api/v1/reports/transactions/{user.id}")
 
-        await self.transaction_service.delete_transaction(transaction.id)
-        restored = await self.account_service.get_account(account.id)
-        self.assertEqual(Decimal("500.00"), restored.balance)
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.json()["total_transactions"], 1)
 
-        transactions = await self.transaction_service.list_transactions(user_id=user.id)
-        self.assertEqual([], list(transactions))
+    async def test_budget_creation_overlap_returns_conflict(self):
+        user = await self.user_service.create_user(make_user_create())
+        payload = {
+            "user_id": user.id,
+            "category": "travel",
+            "limit_amount": 200,
+            "period_start": "2024-02-01",
+            "period_end": "2024-02-28",
+        }
+        first = await self.client.post("/api/v1/budgets", json=payload)
+        self.assertEqual(first.status_code, 201)
+        conflict = await self.client.post("/api/v1/budgets", json=payload)
+        self.assertEqual(conflict.status_code, 409)
 
-    async def test_delete_account_blocked_when_transactions_exist(self) -> None:
-        user = await self._create_user()
-        account = await self._create_account(user, starting_balance=Decimal("250.00"))
-        category = await self._create_category(
-            user,
-            name="Restaurantes",
-            category_type=CategoryType.EXPENSE,
-        )
-        await self._create_transaction(
-            user,
-            account,
-            category,
-            amount=Decimal("50.00"),
-            transaction_type=TransactionType.EXPENSE,
-            description="Almoço",
-        )
+    async def test_user_update_endpoint(self):
+        create = await self.client.post("/api/v1/users", json=make_user_create().model_dump())
+        user_id = create.json()["id"]
+        update_payload = {"name": "Updated", "monthly_income": 8000}
+        response = await self.client.put(f"/api/v1/users/{user_id}", json=update_payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["name"], "Updated")
 
-        with self.assertRaises(ValidationAppError):
-            await self.account_service.delete_account(account.id)
+    async def test_account_delete_endpoint_removes_account(self):
+        user = await self.client.post("/api/v1/users", json=make_user_create().model_dump())
+        user_id = user.json()["id"]
+        account_payload = {
+            "user_id": user_id,
+            "name": "Temp",
+            "institution": "Bank",
+            "type": "checking",
+            "balance": 100,
+        }
+        account = await self.client.post("/api/v1/accounts", json=account_payload)
+        account_id = account.json()["id"]
+        delete_resp = await self.client.delete(f"/api/v1/accounts/{account_id}")
+        self.assertEqual(delete_resp.status_code, 204)
+        list_resp = await self.client.get("/api/v1/accounts", params={"user_id": user_id})
+        self.assertEqual(list_resp.json(), [])
 
-    async def test_delete_category_blocked_by_budget(self) -> None:
-        user = await self._create_user()
-        category = await self._create_category(
-            user,
-            name="Viagem",
-            category_type=CategoryType.EXPENSE,
-        )
-        await self._create_budget(
-            user,
-            category,
-            amount=Decimal("800.00"),
-            year=2024,
-            month=8,
-        )
+    async def test_goal_delete_releases_locked_amount(self):
+        user_resp = await self.client.post("/api/v1/users", json=make_user_create().model_dump())
+        user_id = user_resp.json()["id"]
+        account_payload = {
+            "user_id": user_id,
+            "name": "Lock",
+            "institution": "Bank",
+            "type": "checking",
+            "balance": 500,
+        }
+        account_resp = await self.client.post("/api/v1/accounts", json=account_payload)
+        account_id = account_resp.json()["id"]
+        goal_payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "name": "Reserve",
+            "target_amount": 300,
+            "target_date": "2024-12-01",
+            "lock_funds": True,
+        }
+        goal_resp = await self.client.post("/api/v1/goals", json=goal_payload)
+        goal_id = goal_resp.json()["id"]
+        tx_payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "goal_id": goal_id,
+            "type": "expense",
+            "category": "goal",
+            "description": "Lock",
+            "amount": 100,
+        }
+        await self.client.post("/api/v1/transactions", json=tx_payload)
+        delete_resp = await self.client.delete(f"/api/v1/goals/{goal_id}")
+        self.assertEqual(delete_resp.status_code, 204)
+        account_after = await self.client.get(f"/api/v1/accounts/{account_id}")
+        self.assertEqual(account_after.json()["goal_locked_amount"], 0)
 
-        with self.assertRaises(ValidationAppError):
-            await self.category_service.delete_category(category.id)
+    async def test_transaction_with_goal_wrong_type_returns_conflict(self):
+        user_resp = await self.client.post("/api/v1/users", json=make_user_create().model_dump())
+        user_id = user_resp.json()["id"]
+        account_payload = {
+            "user_id": user_id,
+            "name": "Goal",
+            "institution": "Bank",
+            "type": "checking",
+            "balance": 400,
+        }
+        account_resp = await self.client.post("/api/v1/accounts", json=account_payload)
+        account_id = account_resp.json()["id"]
+        goal_payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "name": "Trip",
+            "target_amount": 500,
+            "target_date": "2024-11-30",
+            "lock_funds": False,
+        }
+        goal_resp = await self.client.post("/api/v1/goals", json=goal_payload)
+        tx_payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "goal_id": goal_resp.json()["id"],
+            "type": "income",
+            "category": "goal",
+            "description": "Invalid",
+            "amount": 50,
+        }
+        response = await self.client.post("/api/v1/transactions", json=tx_payload)
+        self.assertEqual(response.status_code, 409)
 
-    async def test_budget_creation_and_listing_flow(self) -> None:
-        user = await self._create_user()
-        category = await self._create_category(
-            user,
-            name="Educação",
-            category_type=CategoryType.EXPENSE,
-        )
-        may_budget = await self._create_budget(
-            user,
-            category,
-            amount=Decimal("300.00"),
-            year=2024,
-            month=5,
-        )
-        june_budget = await self._create_budget(
-            user,
-            category,
-            amount=Decimal("450.00"),
-            year=2024,
-            month=6,
-        )
+    async def test_get_missing_user_returns_404_with_json(self):
+        response = await self.client.get("/api/v1/users/ghost-user")
 
-        budgets = await self.budget_service.list_budgets(user_id=user.id)
-        self.assertEqual([may_budget.id, june_budget.id], [budget.id for budget in budgets])
+        self.assertEqual(response.status_code, 404)
+        body = response.json()
+        self.assertIn("detail", body)
+        self.assertTrue(body["detail"])
 
-        fetched = await self.budget_service.get_budget(june_budget.id)
-        self.assertEqual(Decimal("450.00"), fetched.amount)
-        self.assertEqual(6, fetched.month)
+    async def test_update_nonexistent_account_returns_404(self):
+        payload = {
+            "name": "Updated",
+            "institution": "Bank",
+            "type": "checking",
+            "balance": 100,
+        }
 
-    async def test_report_monthly_summary_combines_categories_and_budgets(self) -> None:
-        user = await self._create_user()
-        account = await self._create_account(user, starting_balance=Decimal("500.00"))
-        income_category = await self._create_category(
-            user,
-            name="Receitas",
-            category_type=CategoryType.INCOME,
-        )
-        expense_category = await self._create_category(
-            user,
-            name="Aluguel",
-            category_type=CategoryType.EXPENSE,
-        )
-        await self._create_budget(
-            user,
-            expense_category,
-            amount=Decimal("600.00"),
-            year=2024,
-            month=7,
-        )
+        response = await self.client.put("/api/v1/accounts/invalid-id", json=payload)
 
-        await self._create_transaction(
-            user,
-            account,
-            income_category,
-            amount=Decimal("1000.00"),
-            transaction_type=TransactionType.INCOME,
-            description="Salário julho",
-            occurred_at=self._date(2024, 7, 5),
-        )
-        await self._create_transaction(
-            user,
-            account,
-            expense_category,
-            amount=Decimal("400.00"),
-            transaction_type=TransactionType.EXPENSE,
-            description="Aluguel julho",
-            occurred_at=self._date(2024, 7, 10),
-        )
-
-        summary = await self.report_service.monthly_summary(user.id, 2024, 7)
-        self.assertEqual(user.id, summary.user_id)
-        self.assertEqual(
-            Decimal("1000.00"),
-            summary.totals_by_type[TransactionType.INCOME],
-        )
-        self.assertEqual(
-            Decimal("400.00"),
-            summary.totals_by_type[TransactionType.EXPENSE],
-        )
-
-        expense_summary = next(
-            item
-            for item in summary.categories
-            if item.category_id == expense_category.id
-            and item.transaction_type == TransactionType.EXPENSE
-        )
-        self.assertEqual(Decimal("600.00"), expense_summary.budget_amount)
-        self.assertEqual(Decimal("200.00"), expense_summary.budget_remaining)
-
-        income_summary = next(
-            item
-            for item in summary.categories
-            if item.category_id == income_category.id
-            and item.transaction_type == TransactionType.INCOME
-        )
-        self.assertIsNone(income_summary.budget_amount)
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("account", response.json()["detail"].lower())

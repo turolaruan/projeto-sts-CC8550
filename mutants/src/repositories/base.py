@@ -1,65 +1,79 @@
-"""Repository base interfaces."""
+"""Base classes for repository implementations."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Generic, Iterable, Optional, TypeVar
+from abc import ABC
+from datetime import datetime
+from typing import Any, ClassVar, Generic, Optional, TypeVar
 
-T = TypeVar("T")
-ID = TypeVar("ID")
-from inspect import signature as _mutmut_signature
-from typing import Annotated
-from typing import Callable
-from typing import ClassVar
+from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
 
+from src.models import MongoBaseModel
+from src.utils import serialize_document
 
-MutantDict = Annotated[dict[str, Callable], "Mutant"]
+ModelType = TypeVar("ModelType", bound=MongoBaseModel)
 
 
-def _mutmut_trampoline(orig, mutants, call_args, call_kwargs, self_arg = None):
-    """Forward call to original or mutated function, depending on the environment"""
-    import os
-    mutant_under_test = os.environ['MUTANT_UNDER_TEST']
-    if mutant_under_test == 'fail':
-        from mutmut.__main__ import MutmutProgrammaticFailException
-        raise MutmutProgrammaticFailException('Failed programmatically')      
-    elif mutant_under_test == 'stats':
-        from mutmut.__main__ import record_trampoline_hit
-        record_trampoline_hit(orig.__module__ + '.' + orig.__name__)
-        result = orig(*call_args, **call_kwargs)
-        return result
-    prefix = orig.__module__ + '.' + orig.__name__ + '__mutmut_'
-    if not mutant_under_test.startswith(prefix):
-        result = orig(*call_args, **call_kwargs)
-        return result
-    mutant_name = mutant_under_test.rpartition('.')[-1]
-    if self_arg:
-        # call to a class method where self is not bound
-        result = mutants[mutant_name](self_arg, *call_args, **call_kwargs)
-    else:
-        result = mutants[mutant_name](*call_args, **call_kwargs)
-    return result
+class AbstractRepository(Generic[ModelType], ABC):
+    """Generic repository implementing CRUD helpers."""
 
+    collection_name: ClassVar[str]
+    model: ClassVar[type[ModelType]]
 
-class Repository(Generic[T, ID], ABC):
-    """Abstract base class for repositories."""
+    def __init__(self, database: AsyncIOMotorDatabase) -> None:
+        self.database = database
+        self.collection: AsyncIOMotorCollection = database[self.collection_name]
 
-    @abstractmethod
-    async def create(self, entity: T) -> T:
-        """Persist a new entity."""
+    async def create(self, payload: dict[str, Any]) -> ModelType:
+        """Insert a new document and return the corresponding model."""
 
-    @abstractmethod
-    async def get(self, entity_id: ID) -> Optional[T]:
-        """Retrieve entity by identifier."""
+        sanitized = {k: v for k, v in payload.items() if k != "id"}
+        sanitized.setdefault("created_at", datetime.utcnow())
+        result = await self.collection.insert_one(sanitized)
+        persisted = await self.collection.find_one({"_id": result.inserted_id})
+        return self.model(**serialize_document(persisted))
 
-    @abstractmethod
-    async def list(self, **filters: object) -> Iterable[T]:
-        """Return iterable of entities matching filters."""
+    async def get_by_id(self, entity_id: str) -> Optional[ModelType]:
+        """Fetch a document by identifier."""
 
-    @abstractmethod
-    async def update(self, entity_id: ID, data: dict[str, object]) -> Optional[T]:
-        """Update existing entity with provided data."""
+        document = await self.collection.find_one({"_id": self._to_object_id(entity_id)})
+        return self.model(**serialize_document(document)) if document else None
 
-    @abstractmethod
-    async def delete(self, entity_id: ID) -> bool:
-        """Delete entity by identifier and return success flag."""
+    async def list(self, filters: Optional[dict[str, Any]] = None) -> list[ModelType]:
+        """Return all documents matching the provided filters."""
+
+        cursor = self.collection.find(filters or {})
+        documents = [self.model(**serialize_document(doc)) async for doc in cursor]
+        return documents
+
+    async def update(self, entity_id: str, payload: dict[str, Any]) -> Optional[ModelType]:
+        """Update a document partially."""
+
+        sanitized = {k: v for k, v in payload.items() if k != "id"}
+        sanitized["updated_at"] = datetime.utcnow()
+        await self.collection.update_one(
+            {"_id": self._to_object_id(entity_id)},
+            {"$set": sanitized},
+        )
+        document = await self.collection.find_one({"_id": self._to_object_id(entity_id)})
+        return self.model(**serialize_document(document)) if document else None
+
+    async def delete(self, entity_id: str) -> bool:
+        """Remove a document by identifier."""
+
+        result = await self.collection.delete_one({"_id": self._to_object_id(entity_id)})
+        return result.deleted_count == 1
+
+    @staticmethod
+    def _to_object_id(entity_id: str):
+        """Convert string ids to ObjectId when possible."""
+
+        from bson import ObjectId
+
+        return ObjectId(entity_id)
+
+    async def exists(self, filters: dict[str, Any]) -> bool:
+        """Return whether the filter matches any document."""
+
+        document = await self.collection.find_one(filters, projection={"_id": 1})
+        return document is not None

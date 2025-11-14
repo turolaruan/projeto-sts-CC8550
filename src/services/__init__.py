@@ -1,8 +1,21 @@
-"""Business logic services for the Personal Finance Manager."""
+"""Service layer that encapsulates business rules."""
 
-from .account_service import AccountService  # noqa: F401
-from .budget_service import BudgetService  # noqa: F401
-from .category_service import CategoryService  # noqa: F401
-from .report_service import ReportService  # noqa: F401
-from .transaction_service import TransactionService  # noqa: F401
-from .user_service import UserService  # noqa: F401
+from .accounts import AccountService
+from .budgets import BudgetService
+from .exceptions import BusinessRuleError, NotFoundError, ValidationError
+from .goals import GoalService
+from .reports import ReportService
+from .transactions import TransactionService
+from .users import UserService
+
+__all__ = [
+    "AccountService",
+    "BudgetService",
+    "GoalService",
+    "ReportService",
+    "TransactionService",
+    "UserService",
+    "BusinessRuleError",
+    "ValidationError",
+    "NotFoundError",
+]

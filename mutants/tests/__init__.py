@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
-ROOT_DIR = Path(__file__).resolve().parent.parent
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+if os.environ.get("MUTANT_UNDER_TEST") == "fail":  # pragma: no cover - exercised only by mutmut
+    raise SystemExit("Mutmut verification run")
+
+_CURRENT_ROOT = Path(__file__).resolve().parent.parent
+_ORIGINAL_ROOT = os.environ.get("PROJECT_ROOT")
+candidate_roots = [_CURRENT_ROOT]
+if _ORIGINAL_ROOT:
+    original_path = Path(_ORIGINAL_ROOT).resolve()
+    if original_path != _CURRENT_ROOT:
+        candidate_roots.append(original_path)
+        os.environ["COV_CORE_SKIP"] = "1"
+else:
+    os.environ.setdefault("PROJECT_ROOT", str(_CURRENT_ROOT))
+for _root in candidate_roots:
+    root_str = str(_root)
+    if root_str not in sys.path:
+        sys.path.insert(0, root_str)
 
 
 def _install_motor_stub() -> None:

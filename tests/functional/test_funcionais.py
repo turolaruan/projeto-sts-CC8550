@@ -1,105 +1,302 @@
-"""Functional API tests covering HTTP flows and error handling."""
+"""Functional (black-box) scenarios validating complete flows."""
 
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
+import unittest
+from datetime import date, datetime
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from src.app import create_app
-from src.config.settings import Settings
-from src.services.dependencies import get_user_service
-from src.utils.exceptions import EntityNotFoundError
-from tests.structural.helpers import build_user
+from httpx import ASGITransport, AsyncClient, Response
 
-
-@pytest.fixture()
-def app_factory(monkeypatch):
-    """Return a factory that builds FastAPI apps with safe side effects."""
-
-    def factory(*, settings: Settings | None = None):
-        base_settings = settings or Settings(APP_NAME="API Funcional", DEBUG=False, ENVIRONMENT="testing")
-
-        async def noop() -> None:
-            return None
-
-        monkeypatch.setattr("src.app.configure_logging", lambda *_: None)
-        monkeypatch.setattr("src.app.mongo_manager.connect", noop)
-        monkeypatch.setattr("src.app.mongo_manager.close", noop)
-        monkeypatch.setattr("src.controllers.health.get_settings", lambda: base_settings)
-        return create_app(base_settings)
-
-    return factory
-
-
-class SuccessfulUserService:
-    """Stub service used to emulate successful user operations."""
-
-    def __init__(self, user):
-        self.user = user
-        self.created_payloads = []
-        self.deleted_ids = []
-
-    async def create_user(self, payload):
-        self.created_payloads.append(payload)
-        return self.user
-
-    async def delete_user(self, user_id: str) -> None:
-        self.deleted_ids.append(user_id)
+from src.controllers.dependencies import (
+    get_account_service,
+    get_budget_service,
+    get_goal_service,
+    get_report_service,
+    get_transaction_service,
+    get_user_service,
+)
+from src.main import create_app
+from src.services import AccountService, BudgetService, GoalService, ReportService, TransactionService, UserService
+from src.utils import FileManager
+from tests.fixtures.factories import make_budget_create, make_user_create
+from tests.fixtures.memory_repositories import (
+    MemoryAccountRepository,
+    MemoryBudgetRepository,
+    MemoryGoalRepository,
+    MemoryTransactionRepository,
+    MemoryUserRepository,
+)
 
 
-class NotFoundUserService:
-    """Stub service that always raises not-found errors."""
-
-    def __init__(self, message: str = "User missing") -> None:
-        self.message = message
-
-    async def get_user(self, user_id: str):
-        raise EntityNotFoundError(self.message)
-
-
-def test_health_endpoint_returns_environment_metadata(app_factory) -> None:
-    app = app_factory(settings=Settings(APP_NAME="Saude API", ENVIRONMENT="qa", DEBUG=False))
-
-    with TestClient(app) as client:
-        response = client.get("/api/health/")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload == {"status": "ok", "application": "Saude API", "environment": "qa"}
-
-
-def test_user_endpoints_support_post_and_delete(app_factory) -> None:
-    app = app_factory()
-    user = build_user(name="Usuario HTTP")
-    service = SuccessfulUserService(user)
-    app.dependency_overrides[get_user_service] = lambda: service
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/users/",
-            json={
-                "name": "Cliente HTTP",
-                "email": "cliente@example.com",
-                "default_currency": "BRL",
-            },
+class TestFunctionalScenarios(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.user_repository = MemoryUserRepository()
+        self.account_repository = MemoryAccountRepository()
+        self.budget_repository = MemoryBudgetRepository()
+        self.goal_repository = MemoryGoalRepository()
+        self.transaction_repository = MemoryTransactionRepository()
+        self.user_service = UserService(repository=self.user_repository)
+        self.account_service = AccountService(repository=self.account_repository, user_repository=self.user_repository)
+        self.budget_service = BudgetService(repository=self.budget_repository)
+        self.goal_service = GoalService(repository=self.goal_repository, account_repository=self.account_repository)
+        self.transaction_service = TransactionService(
+            repository=self.transaction_repository,
+            account_repository=self.account_repository,
+            user_repository=self.user_repository,
+            budget_service=self.budget_service,
+            goal_service=self.goal_service,
         )
-        delete_response = client.delete(f"/api/users/{user.id}")
+        self.temp_dir = TemporaryDirectory()
+        self.report_service = ReportService(
+            repository=self.transaction_repository,
+            file_manager=FileManager(base_dir=Path(self.temp_dir.name)),
+        )
+        self.app = create_app()
+        self.app.dependency_overrides[get_user_service] = lambda: self.user_service
+        self.app.dependency_overrides[get_account_service] = lambda: self.account_service
+        self.app.dependency_overrides[get_budget_service] = lambda: self.budget_service
+        self.app.dependency_overrides[get_goal_service] = lambda: self.goal_service
+        self.app.dependency_overrides[get_transaction_service] = lambda: self.transaction_service
+        self.app.dependency_overrides[get_report_service] = lambda: self.report_service
+        transport = ASGITransport(app=self.app)
+        self.client = AsyncClient(transport=transport, base_url="http://testserver")
 
-    app.dependency_overrides.clear()
-    assert response.status_code == 201
-    assert response.json()["id"] == user.id
-    assert delete_response.status_code == 204
-    assert service.created_payloads and service.created_payloads[0].email == "cliente@example.com"
-    assert service.deleted_ids == [user.id]
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        self.temp_dir.cleanup()
 
+    async def _create_user(self) -> str:
+        response = await self.client.post("/api/v1/users", json=make_user_create().model_dump())
+        self.assertEqual(response.status_code, 201)
+        return response.json()["id"]
 
-def test_user_get_returns_404_and_error_message(app_factory) -> None:
-    app = app_factory()
-    app.dependency_overrides[get_user_service] = lambda: NotFoundUserService("Usuario nao encontrado")
+    async def _create_account(self, user_id: str, *, name: str = "Wallet", balance: float = 500.0) -> str:
+        payload = {
+            "user_id": user_id,
+            "name": name,
+            "institution": "Bank",
+            "type": "checking",
+            "balance": balance,
+        }
+        response = await self.client.post("/api/v1/accounts", json=payload)
+        self.assertEqual(response.status_code, 201)
+        return response.json()["id"]
 
-    with TestClient(app) as client:
-        response = client.get("/api/users/inexistente")
+    async def _create_budget(self, **overrides) -> str:
+        payload = make_budget_create(**overrides).model_dump()
+        payload["period_start"] = payload["period_start"].isoformat()
+        payload["period_end"] = payload["period_end"].isoformat()
+        response = await self.client.post("/api/v1/budgets", json=payload)
+        self.assertEqual(response.status_code, 201)
+        return response.json()["id"]
 
-    app.dependency_overrides.clear()
-    assert response.status_code == 404
-    assert response.json() == {"detail": "Usuario nao encontrado"}
+    async def _create_goal(self, user_id: str, account_id: str, **overrides) -> str:
+        payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "name": overrides.get("name", "Goal"),
+            "target_amount": overrides.get("target_amount", 500),
+            "target_date": overrides.get("target_date", "2024-12-31"),
+            "lock_funds": overrides.get("lock_funds", False),
+        }
+        response = await self.client.post("/api/v1/goals", json=payload)
+        self.assertEqual(response.status_code, 201)
+        return response.json()["id"]
+
+    async def _post_transaction(self, payload: dict) -> Response:
+        return await self.client.post("/api/v1/transactions", json=payload)
+
+    async def test_user_cannot_exceed_budget(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, balance=500)
+        await self._create_budget(
+            user_id=user_id,
+            category="travel",
+            limit_amount=100,
+            period_start=date(2024, 1, 1),
+            period_end=date(2024, 1, 31),
+        )
+
+        payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "type": "expense",
+            "category": "travel",
+            "description": "Tickets",
+            "amount": 80.0,
+            "event_date": "2024-01-10T00:00:00",
+        }
+        ok_response = await self._post_transaction(payload)
+        self.assertEqual(ok_response.status_code, 201)
+
+        payload["amount"] = 50.0
+        error_response = await self._post_transaction(payload)
+        self.assertEqual(error_response.status_code, 409)
+        self.assertIn("Budget", error_response.json()["detail"])
+
+    async def test_report_generation_returns_file(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, name="Main", balance=100)
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "expense",
+                "category": "food",
+                "description": "Lunch",
+                "amount": 20,
+            }
+        )
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "income",
+                "category": "salary",
+                "description": "Bonus",
+                "amount": 200,
+            }
+        )
+
+        response = await self.client.get(f"/api/v1/reports/transactions/{user_id}")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["total_transactions"], 2)
+        self.assertTrue(payload["file_path"].endswith(".csv"))
+
+    async def test_transaction_search_with_amount_filters(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, name="Daily", balance=300)
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "expense",
+                "category": "food",
+                "description": "Lunch",
+                "amount": 40,
+            }
+        )
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "expense",
+                "category": "food",
+                "description": "Grocery",
+                "amount": 150,
+            }
+        )
+
+        response = await self.client.get(
+            "/api/v1/transactions/search",
+            params={"user_id": user_id, "min_amount": 100, "max_amount": 200},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()), 1)
+
+    async def test_account_creation_with_invalid_user_returns_404(self):
+        payload = {
+            "user_id": "non-existent",
+            "name": "Ghost",
+            "institution": "Nowhere",
+            "type": "checking",
+            "balance": 10,
+        }
+
+        response = await self.client.post("/api/v1/accounts", json=payload)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"], "User not found for account creation")
+
+    async def test_goal_completion_flow(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, name="Goals", balance=1000)
+        goal_id = await self._create_goal(user_id, account_id, name="Laptop", target_amount=500)
+
+        for amount in (300, 250):
+            await self._post_transaction(
+                {
+                    "user_id": user_id,
+                    "account_id": account_id,
+                    "goal_id": goal_id,
+                    "type": "expense",
+                    "category": "goal",
+                    "description": f"Contribution {amount}",
+                    "amount": amount,
+                }
+            )
+
+        goal = await self.client.get(f"/api/v1/goals/{goal_id}")
+        self.assertEqual(goal.json()["status"], "completed")
+
+    async def test_transaction_negative_amount_validation(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, name="Daily", balance=100)
+
+        payload = {
+            "user_id": user_id,
+            "account_id": account_id,
+            "type": "expense",
+            "category": "food",
+            "description": "Invalid",
+            "amount": -10,
+        }
+        response = await self.client.post("/api/v1/transactions", json=payload)
+        self.assertEqual(response.status_code, 422)
+
+    async def test_budget_status_reaches_warning(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, name="Budget", balance=500)
+        await self._create_budget(
+            user_id=user_id,
+            category="food",
+            limit_amount=100,
+            period_start=date(2024, 1, 1),
+            period_end=date(2024, 1, 31),
+        )
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "expense",
+                "category": "food",
+                "description": "Groceries",
+                "amount": 90,
+                "event_date": datetime(2024, 1, 10).isoformat(),
+            }
+        )
+        summary = await self.client.get(f"/api/v1/budgets/summary/{user_id}")
+        self.assertEqual(summary.status_code, 200)
+        self.assertIn(summary.json()[0]["status"], {"warning", "exceeded"})
+
+    async def test_report_totals_match_transactions(self):
+        user_id = await self._create_user()
+        account_id = await self._create_account(user_id, name="Statements", balance=200)
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "expense",
+                "category": "food",
+                "description": "Lunch",
+                "amount": 50,
+            }
+        )
+        await self._post_transaction(
+            {
+                "user_id": user_id,
+                "account_id": account_id,
+                "type": "income",
+                "category": "bonus",
+                "description": "Bonus",
+                "amount": 120,
+            }
+        )
+        response = await self.client.get(f"/api/v1/reports/transactions/{user_id}")
+        data = response.json()
+        self.assertEqual(data["total_expenses"], 50)
+        self.assertEqual(data["total_income"], 120)

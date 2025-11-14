@@ -2,107 +2,60 @@
 
 from __future__ import annotations
 
-from typing import List
+from fastapi import APIRouter, Depends, Query, Response, status
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from src.models import AccountCreate, AccountModel, AccountUpdate
+from src.services import AccountService
 
-from src.models.account import Account, AccountCreate, AccountUpdate
-from src.models.enums import AccountType, CurrencyCode
-from src.services.account_service import AccountService
-from src.services.dependencies import get_account_service
-from src.utils.exceptions import EntityNotFoundError, ValidationAppError
+from .dependencies import get_account_service
 
-
-router = APIRouter(prefix="/accounts", tags=["accounts"])
+router = APIRouter(prefix="/accounts", tags=["Accounts"])
 
 
-@router.post(
-    "/",
-    response_model=Account,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create an account",
-)
+@router.post("", response_model=AccountModel, status_code=status.HTTP_201_CREATED)
 async def create_account(
     payload: AccountCreate,
     service: AccountService = Depends(get_account_service),
-) -> Account:
-    """Create a new account for a user."""
-    try:
-        return await service.create_account(payload)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
-    except ValidationAppError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
+) -> AccountModel:
+    """Create a new account."""
+
+    return await service.create_account(payload)
 
 
-@router.get(
-    "/",
-    response_model=List[Account],
-    summary="List accounts",
-)
+@router.get("", response_model=list[AccountModel])
 async def list_accounts(
-    user_id: str | None = Query(default=None, min_length=24, max_length=24),
-    account_type: AccountType | None = Query(default=None),
-    currency: CurrencyCode | None = Query(default=None),
-    name: str | None = Query(default=None, min_length=1, max_length=120),
+    user_id: str = Query(..., description="Filter accounts by owner"),
     service: AccountService = Depends(get_account_service),
-) -> List[Account]:
-    """Return accounts with optional filtering."""
-    return await service.list_accounts(
-        user_id=user_id,
-        account_type=account_type.value if account_type else None,
-        currency=currency.value if currency else None,
-        name=name,
-    )
+) -> list[AccountModel]:
+    """List accounts for a given user."""
+
+    return await service.list_accounts(user_id)
 
 
-@router.get(
-    "/{account_id}",
-    response_model=Account,
-    summary="Get account by id",
-)
+@router.get("/{account_id}", response_model=AccountModel)
 async def get_account(
     account_id: str,
     service: AccountService = Depends(get_account_service),
-) -> Account:
-    """Retrieve account by identifier."""
-    try:
-        return await service.get_account(account_id)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+) -> AccountModel:
+    """Return account details."""
+
+    return await service.get_account(account_id)
 
 
-@router.patch(
-    "/{account_id}",
-    response_model=Account,
-    summary="Update account",
-)
+@router.put("/{account_id}", response_model=AccountModel)
 async def update_account(
     account_id: str,
     payload: AccountUpdate,
     service: AccountService = Depends(get_account_service),
-) -> Account:
-    """Update an existing account."""
-    try:
-        return await service.update_account(account_id, payload)
-    except ValidationAppError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+) -> AccountModel:
+    """Update account."""
+
+    return await service.update_account(account_id, payload)
 
 
-@router.delete(
-    "/{account_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete account",
-)
-async def delete_account(
-    account_id: str,
-    service: AccountService = Depends(get_account_service),
-) -> Response:
-    """Delete an account."""
-    try:
-        await service.delete_account(account_id)
-    except EntityNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message)
+@router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+async def delete_account(account_id: str, service: AccountService = Depends(get_account_service)) -> Response:
+    """Delete account."""
+
+    await service.delete_account(account_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
