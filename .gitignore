@@ -19,10 +19,6 @@ dist/
 *.swo
 *.bak
 
-# Environment
-.env
-*.env.local
-
 # Logs
 logs/
 *.log
