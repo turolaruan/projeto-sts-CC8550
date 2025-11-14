@@ -2,6 +2,14 @@
 
 ## Link do repositório: https://github.com/turolaruan/projeto-sts-CC8550
 
+## Membros do Grupo
+
+> Felipe Orlando Lanzara - 22.225.015-1
+
+> Pedro Henrique Lega Kramer Costa - 22.125.091-3
+
+> Ruan Pastrelo Turola - 22.225.013-6
+
 ## Testes Unitários
 
 ### Escopo e abordagem
