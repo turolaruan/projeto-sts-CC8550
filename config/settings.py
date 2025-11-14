@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Finance Manager API"
-    environment: Literal["local", "test", "production"] = "local"
+    environment: Literal["local", "development", "test", "production"] = "local"
     api_prefix: str = "/api/v1"
     mongodb_uri: str = "mongodb://mongo:27017"
     mongodb_database: str = "finance_manager"
