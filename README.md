@@ -1,73 +1,128 @@
 # Finance Manager API
 
-Sistema modular para gerenciamento de finanças pessoais desenvolvido para o projeto da disciplina **Simulação e Teste de Software (CC8550)**. A aplicação expõe uma API REST sobre FastAPI com camadas bem definidas (controllers → services → repositories → MongoDB) e já está preparada para receber a suíte completa de testes especificada no `docs/projeto.md`.
+Sistema modular para gerenciamento de finanças pessoais desenvolvido para a disciplina **Simulação e Teste de Software (CC8550)**. A aplicação expõe uma API REST sobre FastAPI com camadas bem definidas (controllers → services → repositories → MongoDB) e já está integrada a uma suíte completa de testes.
 
 ## Principais entidades
 
-- `User`: registra dados pessoais e a renda mensal.
+- `User`: registra dados pessoais e renda mensal.
 - `Account`: contas financeiras com saldo e valores bloqueados para metas.
-- `Transaction`: lançamentos de receitas, despesas e transferências com filtros avançados.
-- `Budget`: orçamentos por categoria e período com controle de limites.
+- `Transaction`: lançamentos de receitas/despesas/transferências com filtros.
+- `Budget`: orçamentos por categoria/período com status dinâmico.
 - `Goal`: metas de economia com bloqueio automático de saldo.
 
-## Regras de negócio implementadas
+## Regras de negócio (destaques)
 
-1. **Validação de saldo com bloqueios**: despesas/transferências não são permitidas quando o saldo disponível (`balance - goal_locked_amount`) ficaria negativo.
-2. **Orçamento por categoria**: antes de efetivar uma despesa, o serviço verifica e atualiza o orçamento mensal correspondente, bloqueando transações que excedam o limite definido.
-3. **Metas com fundos bloqueados**: contribuições para metas travam o saldo na conta, liberando automaticamente quando a meta é concluída ou removida.
+1. **Validação de saldo considerando metas bloqueadas** (`balance - goal_locked_amount` não pode ficar negativo).
+2. **Controle de budgets mensais** com limites e alertas (`healthy`, `warning`, `exceeded`).
+3. **Contribuições para metas** travam/destravaram o saldo automaticamente ao atingir o objetivo.
 
-## Configuração e Execução
+## Pré-requisitos
 
-1. Copie o `.env.example` para `.env` ajustando as variáveis conforme necessário.
-2. Instale dependências: `pip install -r requirements.txt`.
-3. Inicie o MongoDB+API via Docker Compose:
+- Python **3.10+**
+- Git, `pip` e (opcional) Docker/Docker Compose
+- Terminal bash (Linux/macOS) ou PowerShell (Windows)
+
+## Configuração do ambiente
+
+1. **Copie as variáveis**
+   ```bash
+   cp .env.example .env        # Linux/macOS
+   copy .env.example .env      # Windows PowerShell
+   ```
+   Ajuste `MONGODB_URI`, `LOG_LEVEL`, etc.
+
+2. **Crie e ative a virtualenv**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate         # Linux/macOS
+   .venv\Scripts\Activate.ps1        # Windows PowerShell
+   ```
+
+3. **Instale dependências**
+   ```bash
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   ```
+
+4. **(Opcional) Script de bootstrap**
+   ```bash
+   python scripts/bootstrap_env.py
+   ```
+
+## Execução da API
+
+### Via Docker Compose
 
 ```bash
 docker compose -f config/docker-compose.yml up --build
 ```
 
-O serviço ficará disponível em `http://localhost:8000`. A documentação interativa pode ser acessada em `/docs` ou `/redoc`. Se preferir rodar sem Docker, assegure que há um Mongo em execução e suba o FastAPI com:
+### Via Python + Mongo local
+
+1. Garanta um Mongo rodando (ex.: `docker run -p 27017:27017 mongo:7`).
+2. Ajuste o `.env` para a instância.
+3. Rode:
+   ```bash
+   uvicorn src.main:app --reload
+   ```
+
+API disponível em `http://localhost:8000` (Swagger em `/docs` e Redoc em `/redoc`).
+
+## Ferramentas auxiliares
+
+- **Popular dados**  
+  ```bash
+  python scripts/generate_demo_data.py --users 5 --drop-existing --mongodb-uri mongodb://localhost:27018
+  ```
+
+- **CLI**  
+  ```bash
+  python scripts/cli.py users-list
+  python scripts/cli.py users-create --name "CLI User" --email cli@example.com
+  ```
+
+- **Menu interativo**  
+  ```bash
+  python scripts/menu.py
+  python scripts/menu.py --base-url http://localhost:8001/api/v1  # custom host
+  ```
+
+## Testes automatizados
+
+### Todos os testes + cobertura
 
 ```bash
-uvicorn src.main:app --reload
+pytest --cov=src --cov-report=term-missing --cov-report=html tests
 ```
 
-### Popular dados de demonstração
+Relatório HTML disponível em `htmlcov/index.html`.
 
-```bash
-python scripts/generate_demo_data.py --users 5 --drop-existing --mongodb-uri mongodb://localhost:27018
-```
+### Por tipo
 
-Isso cria usuários/contas/orçamentos/metas/transações no Mongo apontado no `.env`.
+| Tipo                            | Comando                                                                 |
+|--------------------------------|-------------------------------------------------------------------------|
+| Unitários                      | `pytest tests/unit`                                                     |
+| Integração                     | `pytest tests/integration`                                              |
+| Funcionais (caixa-preta)       | `pytest tests/functional`                                               |
+| Estruturais (caixa-branca)     | `pytest tests/structural`                                               |
+| Performance/benchmark          | `pytest tests/performance -k benchmark`                                 |
+| Mutação                        | `mutmut run --runner "python3 -m pytest tests/mutation"`               |
 
-### Interface CLI
+### Métricas atuais
 
-Também é possível interagir com a API via CLI:
+- Cobertura: **91 %** (linhas + branches).  
+- Mutation score: **71,6 %** (58/81 mutantes).  
+- Benchmark (busca de transações): ~**0.53 ms** por requisição (OPS ≈ 1.88 Kops/s).
 
-```bash
-python scripts/cli.py users-list
-python scripts/cli.py users-create --name "CLI User" --email cli@example.com
-```
+## Estrutura do repositório (resumo)
 
-### Menu interativo (modo guiado)
-
-Para quem prefere um fluxo com prompts, utilize o menu textual:
-
-```bash
-python scripts/menu.py
-# ou informe explicitamente o host/porta do backend
-python scripts/menu.py --base-url http://localhost:8001/api/v1
-```
-
-O menu permite listar e criar usuários, consultar/criar contas, registrar transações e exportar relatórios sem precisar memorizar endpoints ou parâmetros.
-
-
-## Estrutura
-
-- `src/models`: modelos de domínio e schemas Pydantic.
-- `src/repositories`: camda de acesso a dados com interfaces intercambiáveis.
-- `src/services`: regras de negócio, validações e integração entre entidades.
+- `src/models`: entidades Pydantic e modelos de domínio.
+- `src/repositories`: camada de acesso a dados (\AbstractRepository + implementações Mongo).
+- `src/services`: regras de negócio (accounts, budgets, goals, transactions, users).
 - `src/controllers`: routers FastAPI organizados por recurso.
-- `src/utils`: helpers de configuração, logging, acesso ao MongoDB e exportação de relatórios.
-- `config/docker-compose.yml`: orquestração do app + MongoDB em containers.
+- `src/utils`: logger, FileManager, conexões Mongo etc.
+- `scripts/`: CLI, menu, seed e bootstrap do ambiente.
+- `tests/`: unit, integration, functional, structural, mutation, performance + fixtures.
+- `config/`: `docker-compose.yml`, settings e helpers.
+- Documentação: `docs/projeto.md`, `docs/plano_testes.md`, `docs/relatorio_testes.md`.
 
