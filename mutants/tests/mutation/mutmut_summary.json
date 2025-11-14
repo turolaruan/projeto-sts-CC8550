@@ -1,0 +1,29 @@
+{
+  "account_service": {
+    "module": "src/services/account_service.py",
+    "total_mutants": 81,
+    "killed": 32,
+    "survived": 49,
+    "timeouts": 0,
+    "suspicious": 0,
+    "kill_rate": 0.395
+  },
+  "budget_service": {
+    "module": "src/services/budget_service.py",
+    "total_mutants": 62,
+    "killed": 25,
+    "survived": 37,
+    "timeouts": 0,
+    "suspicious": 0,
+    "kill_rate": 0.403
+  },
+  "transaction_service": {
+    "module": "src/services/transaction_service.py",
+    "total_mutants": 139,
+    "killed": 69,
+    "survived": 70,
+    "timeouts": 0,
+    "suspicious": 0,
+    "kill_rate": 0.496
+  }
+}

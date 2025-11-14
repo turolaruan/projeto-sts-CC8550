@@ -1,0 +1,18 @@
+{
+    "exit_code_by_key": {
+        "database.mongo.x\u01c1MongoManager\u01c1__init____mutmut_1": null,
+        "database.mongo.x\u01c1MongoManager\u01c1__init____mutmut_2": null,
+        "database.mongo.x\u01c1MongoManager\u01c1__init____mutmut_3": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_1": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_2": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_3": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_4": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_5": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_6": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_7": null,
+        "database.mongo.x\u01c1MongoManager\u01c1connect__mutmut_8": null,
+        "database.mongo.x\u01c1MongoManager\u01c1close__mutmut_1": null,
+        "database.mongo.x\u01c1MongoManager\u01c1close__mutmut_2": null
+    },
+    "hash_by_function_name": {}
+}

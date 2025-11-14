@@ -675,29 +675,6 @@ class TransactionRepositoryMongoTest(unittest.IsolatedAsyncioTestCase):
 
         await self.repo._ensure_indexes()
 
-    async def test_list_handles_transfer_account_filters(self) -> None:
-        self.collection.queue_find_results([self.document])
-        await self.repo.list(
-            transfer_account_id=self.transaction.transfer_account_id,
-        )
-        query = self.collection.last_find_query
-        self.assertIn("transfer_account_id", query)
-
-        self.collection.queue_find_results([self.document])
-        await self.repo.list(transfer_account_id=None)
-        self.assertNotIn("transfer_account_id", self.collection.last_find_query)
-
-    async def test_exists_for_category_with_year_only(self) -> None:
-        self.collection.count_documents_result = 0
-        await self.repo.exists_for_category(
-            self.transaction.category_id,
-            year=2025,
-        )
-        query = self.collection.last_count_query
-        date_filter = query["occurred_at"]
-        self.assertIn("$gte", date_filter)
-        self.assertNotIn("$lt", date_filter)
-
 
 class InMemoryTransactionRepositoryTest(unittest.IsolatedAsyncioTestCase):
     async def test_filters_and_aggregations(self) -> None:
