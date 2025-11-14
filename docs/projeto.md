@@ -1,13 +1,5 @@
 # Simulação e Teste de Software (CC8550) – Descrição do Projeto
 
-## Membros do Grupo
-
-> Felipe Orlando Lanzara - 22.225.015-1
-
-> Pedro Henrique Lega Kramer Costa - 22.125.091-3
-
-> Ruan Pastrelo Turola - 22.225.013-6
-
 ---
 
 ## 1. Tema
