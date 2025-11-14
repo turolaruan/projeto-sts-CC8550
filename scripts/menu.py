@@ -166,7 +166,7 @@ def create_transaction() -> None:
     typer.secho("\nNova transação", fg=typer.colors.CYAN)
     user_id = typer.prompt("ID do usuário")
     account_id = typer.prompt("ID da conta")
-    tx_type = _prompt_choice("Tipo", ("income", "expense", "transfer"), default="expense")
+    tx_type = _prompt_choice("Tipo", ("income", "transfer"), default="income")
     amount = _prompt_float("Valor")
     category = typer.prompt("Categoria (ex.: groceries)")
     description = typer.prompt("Descrição", default="Lançamento via menu")
@@ -187,16 +187,6 @@ def create_transaction() -> None:
         typer.secho(f"Transação registrada com ID {data.get('id')}", fg=typer.colors.GREEN)
 
 
-def export_report() -> None:
-    user_id = typer.prompt("ID do usuário para o relatório").strip()
-    data = _call_api("GET", f"/reports/transactions/{user_id}")
-    if data:
-        typer.secho("Relatório gerado com sucesso!", fg=typer.colors.GREEN)
-        typer.echo(f"Arquivo: {data.get('file_path')}")
-        typer.echo(f"Total de transações: {data.get('total_transactions')}")
-        typer.echo(f"Receitas: {_fmt_money(data.get('total_income'))}")
-        typer.echo(f"Despesas: {_fmt_money(data.get('total_expenses'))}")
-
 
 MENU_OPTIONS: list[tuple[str, str, MenuAction]] = [
     ("1", "Listar usuários", list_users),
@@ -204,8 +194,7 @@ MENU_OPTIONS: list[tuple[str, str, MenuAction]] = [
     ("3", "Listar contas de um usuário", list_accounts),
     ("4", "Criar conta", create_account),
     ("5", "Listar transações de um usuário", list_transactions),
-    ("6", "Registrar transação", create_transaction),
-    ("7", "Exportar relatório de transações", export_report),
+    ("6", "Registrar transação", create_transaction)
 ]
 
 
